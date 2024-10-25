@@ -12,9 +12,8 @@ async def test_conversation_with_agents(smart_bee_conversation, smart_bee_chat_m
 
     await smart_bee_conversation.create_agent()
 
-    conversation_id = "thread1"
-    smart_bee_conversation.clear(conversation_id)
-    async for m in smart_bee_conversation.invoke(conversation_id, "3 + 4?"):
+    await smart_bee_conversation.clear(conversation_id)
+    async for m in smart_bee_conversation.invoke(conversation_id, "3121 + 42323?"):
         print(f"RES: {m}")
 
-    print(smart_bee_conversation.generate_title(conversation_id))
+    print(await smart_bee_conversation.generate_title(conversation_id))

@@ -6,7 +6,7 @@ from ai_core import CHROMA_DB_DEFAULT_PERSIST_DIR
 from ai_core.data_source.base import create_data_source
 from ai_core.data_source.model.document import Document
 from ai_core.data_source.splitter import create_splitter, SplitterType
-from ai_core.data_source.utils import split_texts, create_collection_name
+from ai_core.data_source.utils.utils import create_collection_name, split_texts
 from ai_core.data_source.vectorstore.search_type import Similarity
 from ai_core.llm_api_provider import LlmApiProvider
 

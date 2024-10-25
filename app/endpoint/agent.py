@@ -27,6 +27,7 @@ router = APIRouter()
         - tools (Optional[List[int]]): List of tool IDs associated with the agent.
         - tags (Optional[List[int]]): List of tag IDs associated with the agent.
         - sub_agents (Optional[List[int]]): List of child agent IDs.
+        - datasources (List[int]): A list of agent IDs to associate with the agent.
     </pre>
     """
 )
@@ -41,7 +42,7 @@ def create_agent(
     # Handle prompts, tools, and tags associations
     update_data = agent.dict(exclude_unset=True)
     for key, value in update_data.items():
-        if key not in ["prompts", "tools", "tags", "sub_agents"]:
+        if key not in ["prompts", "tools", "tags", "sub_agents","datasources"]:
             setattr(db_agent, key, value)
 
     db.add(db_agent)
@@ -103,7 +104,11 @@ def create_agent(
             if db_child_agent:
                 db_child_agent.parent_agent_id = db_agent.agent_id
                 db.add(db_child_agent)
-
+    if 'datasources' in update_data:
+        for datasource_id in agent.datasources:
+            db_datasource = db.query(database.DataSource).filter(database.db_comment_endpoint).filter(database.DataSource.datasource_id == datasource_id).first()
+            if db_datasource:
+                db_agent.datasources.append(db_datasource)
     db.flush()
     db.refresh(db_agent)
 
@@ -150,6 +155,7 @@ def get_agent(
         - tools (Optional[List[int]]): List of tool IDs associated with the agent.
         - tags (Optional[List[int]]): List of tag IDs associated with the agent.
         - sub_agents (Optional[List[int]]): List of child agent IDs.
+        - datasources (List[int]): A list of agent IDs to associate with the agent.
     </pre>
     """
 )
@@ -169,7 +175,7 @@ def update_agent(
 
     update_data = agent.dict(exclude_unset=True)
     for key, value in update_data.items():
-        if key not in ["prompts", "tools", "tags", "sub_agents"]:
+        if key not in ["prompts", "tools", "tags", "sub_agents","datasources"]:
             setattr(db_agent, key, value)
     
     # Handle prompts associations
@@ -241,7 +247,12 @@ def update_agent(
             if db_child_agent:
                 db_child_agent.parent_agent_id = db_agent.agent_id
 
-
+    if 'datasources' in update_data:
+        db_agent.datasources = []
+        for datasource_id in agent.datasources:
+            db_datasource = db.query(database.DataSource).filter(database.db_comment_endpoint).filter(database.DataSource.datasource_id == datasource_id).first()
+            if db_datasource:
+                db_agent.datasources.append(db_datasource)
     db.flush()
     db.refresh(db_agent)
     

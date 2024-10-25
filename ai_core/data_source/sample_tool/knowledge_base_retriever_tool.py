@@ -5,7 +5,6 @@ from langchain_core.tools import tool, create_retriever_tool
 from langchain_openai import OpenAIEmbeddings
 
 from ai_core.data_source.vectorstore.search_type import Similarity
-from ai_core.llm_api_provider import LlmApiProvider
 
 
 @tool

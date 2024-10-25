@@ -6,7 +6,7 @@ from langchain_core.output_parsers import SimpleJsonOutputParser
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import Runnable, RunnableLambda
 from langchain_core.tools import BaseTool
-from langgraph.checkpoint import BaseCheckpointSaver
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.constants import END, START
 from langgraph.graph import MessagesState, StateGraph, add_messages
 from langgraph.graph.graph import CompiledGraph
@@ -34,13 +34,25 @@ class PromptConfig(NamedTuple):
 
 def create_agent(chat_model: BaseChatModel, checkpointer: BaseCheckpointSaver,
                  tools: Optional[Sequence[Union[BaseTool, Callable]]] = None,
-                 before_messages: Optional[List[MessageLikeRepresentation]] = None,
+                 before_messages: Optional[Sequence[MessageLikeRepresentation]] = None,
                  debug=False) -> CompiledGraph:
     if tools:
-        messages_modifier = None
-        if before_messages:
-            def messages_modifier(messages: list):
-                return before_messages + messages
+        def messages_modifier(messages: Sequence[MessageLikeRepresentation]):
+            revised_messages = messages
+            # check if messages contains a message with name 'start'
+            start_index = -1
+            for i, message in enumerate(messages):
+                if message.name == 'start':
+                    start_index = i
+                    break
+
+            if start_index != -1:
+                revised_messages = messages[start_index:]
+
+            if before_messages:
+                return before_messages + revised_messages
+
+            return revised_messages
 
         return create_react_agent(chat_model, tools, messages_modifier=messages_modifier, checkpointer=checkpointer,
                                   debug=debug)
@@ -94,8 +106,8 @@ class SupervisorAgentState(TypedDict):
 
 
 def create_supervisor_agent(chat_model: BaseChatModel, agents: list[Agent],
-                            checkpointer: BaseCheckpointSaver) -> CompiledGraph:
-    system_prompt = (
+                            checkpointer: BaseCheckpointSaver, prompts: List[MessageLikeRepresentation] = None) -> CompiledGraph:
+    agent_descriptions_system_prompt = (
         "You are a supervisor tasked with managing a conversation between the"
         " following workers:  {members}. Given the following user request,"
         " respond with the worker to act next. Each worker will perform a"
@@ -105,6 +117,20 @@ def create_supervisor_agent(chat_model: BaseChatModel, agents: list[Agent],
         "{descriptions}"
     )
 
+    agent_decision_system_prompt = (
+        "system",
+        "Given the dialogue above, who should act next? Or should we finish? "
+        "If you think there's nothing wrong with finishing the dialogue, you should select 'FINISH'. "
+        "You must select one of the following: {options} and "
+        "return it in a JSON message with next_agent key and question to the next_agent, no other text."
+        "For example, if you want to select the 'agent' and ask 'What is 3 + 4?', you should return: "
+        "{{\"next_agent\": \"agent\", \"question_to_next_agent\": \"What is 3 + 4?\"}}. "
+        "And if you want to finish the dialogue, you should make final answer to "
+        "the last human question with regard to the above dialogue "
+        "as much detail as possible even if there is no dialogue and return: "
+        "{{\"next_agent\": \"FINISH\", \"answer\": \"detailed answer to the question\"}}."
+    )
+
     agent_names = list(map(lambda agent: agent.name, agents))
     options = ["FINISH"] + agent_names
 
@@ -112,35 +138,24 @@ def create_supervisor_agent(chat_model: BaseChatModel, agents: list[Agent],
 
     descriptions = "\n\n".join([f"{agent.name}: {agent.description}" for agent in agents])
 
-    prompt = ChatPromptTemplate.from_messages(
-        [
-            ("system", system_prompt),
-            MessagesPlaceholder(variable_name="messages"),
-            (
-                "system",
-                "Given the dialogue above, who should act next? Or should we finish? "
-                "If you think there's nothing wrong with finishing the dialogue, you should select 'FINISH'. "
-                "You must select one of the following: {options} and "
-                "return it in a JSON message with next_agent key and question to the next_agent, no other text."
-                "For example, if you want to select the 'agent' and ask 'What is 3 + 4?', you should return: "
-                "{{\"next_agent\": \"agent\", \"question_to_next_agent\": \"What is 3 + 4?\"}}. "
-                "And if you want to finish the dialogue, you should make final answer to "
-                "the last human question with regard to the above dialogue "
-                "as much detail as possible even if there is no dialogue and return: "
-                "{{\"next_agent\": \"FINISH\", \"answer\": \"detailed answer to the question\"}}."
-            ),
-        ]
-    ).partial(options=str(options), members=str(options), descriptions=descriptions)
+    messages = [("system", agent_descriptions_system_prompt)]
+    if prompts:
+        messages.extend(prompts)
+
+    messages.append(MessagesPlaceholder(variable_name="messages"))
+    messages.append(agent_decision_system_prompt)
+
+    prompt = (ChatPromptTemplate.from_messages(messages)
+              .partial(options=str(options), members=str(options), descriptions=descriptions))
 
     supervisor = prompt | chat_model | parser
 
     def call_supervisor(state: SupervisorAgentState):
         res = supervisor.invoke(state)
-        messages = []
         if res["next_agent"] != "FINISH":
-            messages.append(AIMessage(res["question_to_next_agent"], name="start"))
+            messages = [AIMessage(res["question_to_next_agent"], name="start")]
         else:
-            messages.append(AIMessage(res["answer"]))
+            messages = [AIMessage(res["answer"])]
 
         return {"messages": messages, "next_agent": res["next_agent"]}
 

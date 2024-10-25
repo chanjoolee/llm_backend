@@ -69,8 +69,9 @@ def smart_bee_chat_model(smart_bee_api_key, smart_bee_api_url, smart_bee_model, 
     )
 
 
-@pytest.fixture
-def smart_bee_conversation(history_conn_str, smart_bee_api_key, smart_bee_api_url, smart_bee_model, request) -> Conversation:
+@pytest_asyncio.fixture
+async def smart_bee_conversation(smart_bee_api_key, smart_bee_api_url, smart_bee_model,
+                                 sync_conn_pool, async_conn_pool, request) -> Conversation:
     return ConversationFactory.create_conversation(
         llm_api_provider=LlmApiProvider.SMART_BEE.value,
         llm_model=request.getfixturevalue(smart_bee_model),
@@ -78,18 +79,21 @@ def smart_bee_conversation(history_conn_str, smart_bee_api_key, smart_bee_api_ur
         llm_api_url=smart_bee_api_url,
         temperature=0.2,
         max_tokens=100,
-        history_connection_str=history_conn_str,
+        sync_conn_pool=sync_conn_pool,
+        async_conn_pool=async_conn_pool,
     )
 
 
-@pytest.fixture
-def ai_one_conversation(history_conn_str, ai_one_api_key, ai_one_api_url, ai_one_model, request) -> Conversation:
+@pytest_asyncio.fixture
+async def ai_one_conversation(ai_one_api_key, ai_one_api_url, ai_one_model,
+                              sync_conn_pool, async_conn_pool, request) -> Conversation:
     return ConversationFactory.create_conversation(
         llm_api_provider=LlmApiProvider.AI_ONE.value,
         llm_model=request.getfixturevalue(ai_one_model),
         llm_api_key=ai_one_api_key,
         llm_api_url=ai_one_api_url,
         temperature=0.2,
-        max_tokens=100,
-        history_connection_str=history_conn_str,
+        max_tokens=1024,
+        sync_conn_pool=sync_conn_pool,
+        async_conn_pool=async_conn_pool,
     )

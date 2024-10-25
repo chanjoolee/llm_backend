@@ -20,10 +20,11 @@ from gitlab.v4.objects import Project, ProjectFile
 from docx.api import Document as DocxDocument
 
 from ai_core import DATA_SOURCE_SAVE_BASE_DIR, CHROMA_DB_DEFAULT_PERSIST_DIR
+from ai_core.base import ComponentType, create_tool_name
 from ai_core.data_source.model.document import Document, DocumentEncoder
-from ai_core.data_source.utils import create_data_source_id, bs4_extractor, safe_get, truncate_content, \
-    get_first, clean_json_string
+from ai_core.data_source.utils.utils import create_data_source_id, bs4_extractor, truncate_content, get_first
 from ai_core.data_source.collection import Collection
+from ai_core.data_source.utils.jira_utils import filter_required_fields, cleanse_fields
 from ai_core.data_source.vectorstore.search_type import Similarity
 from ai_core.time_utils import datetime_to_str
 
@@ -220,7 +221,7 @@ class DataSource(BaseModel):
         first_file = self.data_dir_path + "/0/data0.txt"
 
         if os.path.isfile(first_file):
-            with open(first_file, "r",encoding="utf-8") as f:
+            with open(first_file, "r", encoding="utf-8") as f:
                 content = f.read()
                 if len(content) > self.PREVIEW_DATA_MAX_LENGTH:
                     content = content[:self.PREVIEW_DATA_MAX_LENGTH]
@@ -479,78 +480,8 @@ class DocumentFileDataSource(DataSource):
 
 
 class JiraDataSource(DataSource):
-    def _filter_required_fields(self, issue_fields):
-        required_fields = [
-            "summary",
-            "fixVersions",
-            "resolution",
-            "priority",
-            "labels",
-            "versions",
-            "status",
-            "components",
-            "subtasks",
-            "progress",
-            "worklog",
-            "issuetype",
-            "project",
-            "resolutiondate",
-            "created",
-            "updated",
-            "description",
-            "comment",
-            "assignee"
-        ]
-
-        return {field: issue_fields[field] for field in required_fields if field in issue_fields}
-
-    def _cleanse_fields(self, required_fields):
-        result = {}
-
-        result["summary"] = safe_get(required_fields, "summary", "")
-
-        assignee = safe_get(required_fields, "assignee", {})
-        result["assignee"] = {"displayName": safe_get(assignee, "displayName", ""), "name": safe_get(assignee, "name", "")}
-
-        result["fixVersions"] = [{"name": safe_get(fix_version, "name"), "released": safe_get(fix_version, "released")} for fix_version in required_fields.get("fixVersions", [])]
-
-        resolution = safe_get(required_fields, "resolution", {})
-        result["resolution"] = {"name": safe_get(resolution, "name"), "description": safe_get(resolution, "description")}
-
-        priority = safe_get(required_fields, "priority", {})
-        result["priority"] = safe_get(priority, "name")
-
-        result["labels"] = safe_get(required_fields, "labels", [])
-        result["versions"] = [{"name": safe_get(version, "name"), "released": safe_get(version, "released"), "releaseDate": safe_get(version, "releaseDate")} for version in required_fields.get("versions", [])]
-
-        status = safe_get(required_fields, "status", {})
-        status_category = safe_get(status, "statusCategory", {})
-        result["status"] = {"description": safe_get(status, "description"), "name": safe_get(status, "name"), "statusCategory": safe_get(status_category, "name")}
-
-        result["components"] = [{"name": safe_get(component, "name"), "description": safe_get(component, "description")} for component in required_fields.get("components", [])]
-        result["subtasks"] = required_fields.get("subtasks", [])
-        result["progress"] = required_fields.get("progress", {})
-        result["worklog"] = required_fields.get("worklog", {})
-
-        issue_type = safe_get(required_fields, "issuetype", {})
-        result["issueType"] = {"name": safe_get(issue_type, "name"), "description": safe_get(issue_type, "description")}
-
-        project = safe_get(required_fields, "project", {})
-        project_category = safe_get(project, "projectCategory", {})
-        result["project"] = {"name": safe_get(project, "name"), "description": clean_json_string(safe_get(project_category, "description"))}
-
-        result["resolutionDate"] = required_fields.get("resolutiondate", None)
-        result["created"] = required_fields.get("created", None)
-        result["updated"] = required_fields.get("updated", None)
-        result["description"] = clean_json_string(required_fields.get("description", None))
-
-        comment = safe_get(required_fields, "comment", {})
-        result["comments"] = [{"body": clean_json_string(safe_get(c, "body")), "displayName": safe_get(safe_get(c, "updateAuthor", {}), "displayName"), "created": safe_get(c, "created"), "updated": safe_get(c, "updated")} for c in safe_get(comment, "comments", [])]
-
-        return result
-
     def _create_metadata(self, cleaned_fields: dict) -> dict:
-        metadata_keys = ["key", "last_updated", "assignee"]
+        metadata_keys = ["key", "updated", "assignee"]
         metadata = {key: cleaned_fields[key] for key in metadata_keys if key in cleaned_fields}
 
         return metadata if metadata else {}
@@ -566,12 +497,12 @@ class JiraDataSource(DataSource):
             for issue_key in issue_keys:
                 issue = jira.issue(issue_key)
 
-                required_fields = self._filter_required_fields(issue["fields"])
-                cleaned_fields = self._cleanse_fields(required_fields)
+                required_fields = filter_required_fields(issue["fields"])
+                cleaned_fields = cleanse_fields(required_fields)
                 cleaned_fields["key"] = issue["key"]
                 key = {"key": issue["key"]}
 
-                content = json.dumps({**key, **cleaned_fields})
+                content = json.dumps({**key, **cleaned_fields}, indent=2, ensure_ascii=False)
                 metadata = self._create_metadata(cleaned_fields)
 
                 yield Document(content=content, metadata=metadata)
@@ -590,12 +521,12 @@ class JiraDataSource(DataSource):
 
         if issue_keys:
             issue = jira.issue(issue_keys[0])
-            required_fields = self._filter_required_fields(issue["fields"])
-            cleaned_fields = self._cleanse_fields(required_fields)
+            required_fields = filter_required_fields(issue["fields"])
+            cleaned_fields = cleanse_fields(required_fields)
             cleaned_fields["key"] = issue["key"]
             key = {"key": issue["key"]}
 
-            return json.dumps({**key, **cleaned_fields})
+            return json.dumps({**key, **cleaned_fields}, indent=2, ensure_ascii=False)
         else:
             return ""
 
@@ -698,3 +629,8 @@ def create_data_source(data_source_name: str, created_by: str, description: str,
         return GitlabDiscussionDataSource(**datasource_data)
     else:
         raise ValueError(f"Invalid data source type: {data_source_type}")
+
+
+def create_data_source_tool(name: str, username: str, datasource: DataSource) -> Tool:
+    tool_name = create_tool_name(ComponentType.DATASOURCE, name, username)
+    return datasource.as_retriever_tool(tool_name, datasource.description)

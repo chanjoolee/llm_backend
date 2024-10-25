@@ -1,4 +1,5 @@
 import enum
+from langgraph.checkpoint.mysql.pymysql import PyMySQLSaver
 from sqlalchemy import Boolean, Float, UniqueConstraint, create_engine ,Table, Column, Integer, String, Text, Enum, ForeignKey, TIMESTAMP , event, Index, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import Session, relationship, sessionmaker , backref
@@ -61,12 +62,24 @@ def get_db():
         raise e
     finally:
         db.close()
-
+        
+def get_db_async():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        pass
+        # db.commit()
+        # db.close()
+        
 class CustomSession(Session):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.is_endpoint_query = False
 
+def checkpointer_setup(connection_url):
+    with PyMySQLSaver.from_conn_string(connection_url) as checkpointer: # type: PyMySQLSaver
+        checkpointer.setup()
      
 def create_sync_connection_pool():
     global sync_conn_pool
@@ -79,7 +92,8 @@ def create_sync_connection_pool():
 
         encoded_password = quote(password)
         connection_url = f"mysql+pymysql://{username}:{encoded_password}@{host}:{port}/{database_name}"
-
+        connection_url_checkpoint = f"mysql://{username}:{encoded_password}@{host}:{port}/{database_name}"
+        checkpointer_setup(connection_url_checkpoint)
         sync_conn_pool = MySQLSaver.create_sync_connection_pool(
             host=host,
             user=username,
@@ -88,7 +102,7 @@ def create_sync_connection_pool():
             port=int(port),
             autocommit=True
         )
-        MySQLSaver.create_tables(sync_conn_pool)
+        # MySQLSaver.create_tables(sync_conn_pool)
     return sync_conn_pool
 
 async def create_async_connection_pool():
@@ -229,6 +243,13 @@ conversation_datasource = Table(
     Base.metadata,
     Column('datasource_id', String(255), ForeignKey('datasources.datasource_id'), primary_key=True),
     Column('conversation_id', String(255), ForeignKey('conversations.conversation_id'), primary_key=True)
+)
+
+agent_datasource = Table(
+    'agent_datasource', 
+    Base.metadata,
+    Column('agent_id', Integer, ForeignKey('agents.agent_id'), primary_key=True),
+    Column('datasource_id', String(255), ForeignKey('datasources.datasource_id'), primary_key=True),
 )
 
 class ConversationVariable(Base):
@@ -635,9 +656,18 @@ class Agent(Base):
     tags = relationship("Tag", secondary=agent_tags, back_populates="agents")
     variables = relationship("AgentVariable", cascade="all, delete-orphan", back_populates="agent")
     conversations = relationship("Conversation", secondary=conversation_agent, back_populates="agents")
-
+    # Many-to-many relationship with DataSource
+    datasources = relationship(
+        "DataSource",
+        secondary=agent_datasource,
+        back_populates="agents"
+    )
 # Define possible data source types as an Enum
-
+class DatasourceDownloadStatus(Enum):
+    downloaded = 'downloaded'
+    downloading = 'downloading'
+    error = 'error'
+    cancelled = 'cancelled'
 
 class DataSource(Base):
     """
@@ -682,6 +712,7 @@ class DataSource(Base):
     project_key = Column(String(255), nullable=True, comment='Project key for JIRA')
     start = Column(Integer, nullable=True, comment='Start index for JIRA issues')
     limit = Column(Integer, nullable=True, comment='Limit for JIRA issues')
+    token = Column(String(255), comment='Token Jira')
     
     # Fields specific to Confluence data sources
     space_key = Column(String(255), nullable=True, comment='Space key for Confluence')
@@ -696,9 +727,10 @@ class DataSource(Base):
     url = Column(String(255), nullable=True, comment='URL for URL data source')
     base_url = Column(String(255), nullable=True, comment='Base URL for URL data source')
     max_depth = Column(Integer, nullable=True, comment='Maximum depth for URL crawling')
-
-
-
+    
+    status = Column(String(20), nullable=False, default=DatasourceDownloadStatus.downloading, comment='Status of the datasource download process  downloaded,downloading,error,cancelled')
+    downloaded_at = Column(TIMESTAMP, nullable=True, comment='Timestamp when the datasource data downloaded')
+    
     # Timestamp when the data source was created, automatically set to the current time
     created_at = Column(TIMESTAMP, default=lambda: datetime.now(KST), comment='Timestamp when the data source was created')
     # Timestamp for the last update to the data source, automatically set to the current time
@@ -715,6 +747,11 @@ class DataSource(Base):
     conversations = relationship(
         "Conversation",
         secondary=conversation_datasource,
+        back_populates="datasources"
+    )
+    agents = relationship(
+        "Agent",
+        secondary=agent_datasource,
         back_populates="datasources"
     )
     # Many-to-one relationship with Embedding

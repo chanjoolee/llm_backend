@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import pymysql
 # from .endpoint.docs import router as docs_router
+from .endpoint.utils import router as utils_router
 from .endpoint.commonCode import router as cmmcode_router
 from .endpoint.users import router as user_router
 from .endpoint.messages import router as message_router
@@ -32,8 +33,8 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from typing import List
 from fastapi_sessions.backends.implementations import InMemoryBackend
 # from .endpoint import langchainAgent as agent
-from langserve import add_routes
-from dotenv import load_dotenv
+# from langserve import add_routes
+# from dotenv import load_dotenv
 import os
 import app.config
 from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
@@ -154,6 +155,7 @@ async def startup_event():
     event.listen(engine, "after_execute", after_execute)
     event.listen(engine, "before_cursor_execute", before_cursor_execute)
 
+    
     database.create_sync_connection_pool()
     await database.create_async_connection_pool()
     
@@ -309,6 +311,7 @@ async def add_session_to_request(request: Request, call_next):
 
 # app.include_router(sample_router, prefix="/api/sample")
 # app.include_router(sample_langchain_router, prefix="/api")
+app.include_router(utils_router, prefix="/api", tags=["Common Utils"])
 app.include_router(cmmcode_router, prefix="/api")
 app.include_router(user_router, prefix="/api")
 app.include_router(message_router, prefix="/api")

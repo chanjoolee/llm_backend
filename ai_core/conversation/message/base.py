@@ -1,9 +1,10 @@
 from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
-from langchain_core.messages import BaseMessage, AIMessage, ToolMessage, AIMessageChunk, SystemMessage
+from langchain_core.messages import BaseMessage, AIMessage, ToolMessage, AIMessageChunk, SystemMessage, \
+    MessageLikeRepresentation
 from langchain_core.prompts import SystemMessagePromptTemplate, MessagesPlaceholder
 
 from ai_core.conversation.message.tokens import TokensUsage
@@ -123,7 +124,7 @@ def convert_to_daisy_message(message: BaseMessage) -> DaisyMessage:
                         tokens_usage=tokens_usage, tool_call=tool_call)
 
 
-def create_default_prompt_messages(system_message="You are a helpful assistant."):
+def create_default_prompt_messages(system_message="You are a helpful assistant.") -> List[MessageLikeRepresentation]:
     return [
         SystemMessage(system_message)
     ]

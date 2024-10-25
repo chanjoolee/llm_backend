@@ -11,10 +11,9 @@ async def test_tool_call(smart_bee_conversation: Conversation, conversation_id, 
     smart_bee_conversation.add_tool("add", "egnarts", './add.py')
     try:
         await smart_bee_conversation.create_agent(debug=False)
-        smart_bee_conversation.clear("session2")
-        # messages = smart_bee_conversation.invoke("session2", "3과 4를 더한 결과는?")
+        await smart_bee_conversation.clear(conversation_id)
         messages = []
-        async for m in smart_bee_conversation.invoke("session2", "3과 4를 더한 결과는?"):
+        async for m in smart_bee_conversation.invoke(conversation_id, "3과 4를 더한 결과는?"):
             print(m)
             messages.append(m)
 
@@ -27,17 +26,13 @@ async def test_tool_call(smart_bee_conversation: Conversation, conversation_id, 
     finally:
         await smart_bee_conversation.close_connection_pools()
 
-    # assert messages[0].tool_call is not None
-    # assert messages[0].tool_call.inputs == {'a': 3, 'b': 4}
-    # assert int(messages[1].tool_call.output) == 7
-
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("conversation_id, ai_one_model", [("test1", "ai_one_gpt_4o"),])
+@pytest.mark.parametrize("conversation_id, ai_one_model", [("test1", "ai_one_claude"),])
 async def test_tool_call_streaming(ai_one_conversation: Conversation, conversation_id, ai_one_model):
     ai_one_conversation.add_tool("add", "egnarts", './add.py')
-    ai_one_conversation.create_agent(debug=True)
-    ai_one_conversation.clear(conversation_id)
+    await ai_one_conversation.create_agent(debug=True)
+    await ai_one_conversation.clear(conversation_id)
     async for m in ai_one_conversation.stream(conversation_id, "3과 4를 더한 결과는?"):
         print("Returned", m)
 

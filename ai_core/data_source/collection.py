@@ -13,7 +13,7 @@ from langchain_core.documents import Document
 from chromadb.api import Collection
 from pydantic import BaseModel, ConfigDict, Field
 
-from ai_core.data_source.utils import split_list_by_length
+from ai_core.data_source.utils.utils import split_list_by_length
 
 
 logger = logging.getLogger(__name__)

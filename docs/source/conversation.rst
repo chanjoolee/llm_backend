@@ -197,7 +197,7 @@
         print(message)
 
     # 대화 삭제
-    conversation.clear("session1")
+    await conversation.clear("session1")
 
     # 히스토리가 삭제되어 기억하지 못함
     response = conversation.invoke("session1", "토픽에 대해 더 자세히 설명해줘")

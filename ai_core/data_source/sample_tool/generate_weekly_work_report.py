@@ -5,7 +5,7 @@ from langchain_core.tools import tool
 
 from ai_core.data_source.base import create_data_source, DataSourceType
 from ai_core.data_source.embedding import SmartBeeEmbeddingModelFactory
-from ai_core.data_source.utils import create_collection_name
+from ai_core.data_source.utils.utils import create_collection_name
 from ai_core.llm_api_provider import LlmApiProvider
 
 

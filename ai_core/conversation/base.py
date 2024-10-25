@@ -12,19 +12,20 @@ from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.language_models.chat_models import BaseChatModel
-from langgraph.checkpoint import MemorySaver, BaseCheckpointSaver
+from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.checkpoint.memory import MemorySaver
 from pydantic import BaseModel, field_validator, Field
 
 from ai_core.agent.base import create_agent, Agent, create_supervisor_agent
-from ai_core.base import create_tool_name, ComponentType
 from ai_core.checkpoint.mysql_saver import MySQLSaver
 from ai_core.conversation.message.base import DaisyMessage, \
     create_default_prompt_messages, ToolCall, convert_to_daisy_message
-from ai_core.data_source.base import DataSource
+from ai_core.data_source.base import DataSource, create_data_source_tool
 from ai_core.llm.base import create_chat_model
 from ai_core.llm_api_provider import LlmApiProvider
 from ai_core.prompt.base import PromptComponent
 from ai_core.tool.base import load_tool
+from langgraph.checkpoint.mysql.aio import AIOMySQLSaver
 
 SUPPORTED_LLM_PROVIDERS = {LlmApiProvider.AI_ONE.value, LlmApiProvider.SMART_BEE.value, LlmApiProvider.AZURE.value}
 
@@ -92,7 +93,7 @@ class Conversation(BaseModel):
                 raise ValueError("Cannot have both agents and tools")
 
             # TODO 슈퍼바이저 에이전트의 system message도 데이지에서 설정 가능하도록 할 것인가?
-            self._runnable = create_supervisor_agent(self._chat_model, self.agents, self._checkpointer)
+            self._runnable = create_supervisor_agent(self._chat_model, self.agents, self._checkpointer, messages)
         else:
             self._runnable = create_agent(self._chat_model, self._checkpointer, self.tools, before_messages=messages,
                                           debug=debug)
@@ -121,10 +122,8 @@ class Conversation(BaseModel):
         """
         self.tools.append(load_tool(name, username, tool_path))
 
-    def add_datasource(self, name, username, datasource: DataSource):
-        tool_name = create_tool_name(ComponentType.DATASOURCE, name, username)
-        tool = datasource.as_retriever_tool(tool_name, datasource.description)
-
+    def add_datasource(self, name: str, username: str, datasource: DataSource):
+        tool = create_data_source_tool(name, username, datasource)
         self.tools.append(tool)
 
     def add_agent(self, name: str, description: str, chat_model: BaseChatModel, tools: Sequence[Union[BaseTool, Callable]],
@@ -152,9 +151,8 @@ class Conversation(BaseModel):
         )
 
     def _create_saver(self):
-        if self.sync_conn_pool and self.async_conn_pool:
-            self._checkpointer = MySQLSaver(sync_connection_pool=self.sync_conn_pool,
-                                            async_connection_pool=self.async_conn_pool)
+        if self.async_conn_pool:
+            self._checkpointer = AIOMySQLSaver(self.async_conn_pool)
         else:
             self._checkpointer = MemorySaver()
 
@@ -229,7 +227,7 @@ class Conversation(BaseModel):
 
         return tool.invoke(args)
 
-    def generate_title(self, conversation_id) -> Optional[str]:
+    async def generate_title(self, conversation_id) -> Optional[str]:
         """
         대화 히스토리를 이용하여 제목을 생성합니다.
 
@@ -240,7 +238,7 @@ class Conversation(BaseModel):
             Optional[str]: 생성된 제목, 대화 히스토리가 없으면 None을 반환합니다.
         """
         config = self._create_chat_config(conversation_id)
-        checkpoint = self._checkpointer.get(config)
+        checkpoint = await self._checkpointer.aget(config)
         if not checkpoint:
             return None
 
@@ -258,7 +256,7 @@ class Conversation(BaseModel):
         message_with_title = title_generator.invoke({"question": "앞의 모든 메시지를 보고 제목을 20글자 이내로 명확하게 생성해주세요."})
         return message_with_title.content
 
-    def copy_conversation(self, conversation_id, new_conversation_id):
+    async def copy_conversation(self, conversation_id, new_conversation_id):
         """
         대화를 신규 대화로 복사합니다.
 
@@ -266,9 +264,10 @@ class Conversation(BaseModel):
             conversation_id: 복사할 대화 ID
             new_conversation_id: 새로운 대화 ID
         """
-        self._checkpointer.clone_thread(conversation_id, new_conversation_id)
+        if isinstance(self._checkpointer, AIOMySQLSaver):
+            await self._checkpointer.clone_thread(conversation_id, new_conversation_id)
 
-    def clear(self, conversation_id):
+    async def clear(self, conversation_id):
         """
         대화 히스토리를 삭제합니다.
 
@@ -276,10 +275,10 @@ class Conversation(BaseModel):
             conversation_id: 대화 ID
         """
         # checkpoint = empty_checkpoint()
-        # config = self._create_chat_config(conversation_id)
         # self._checkpointer.put(config=config, checkpoint=checkpoint, metadata={})
-        if isinstance(self._checkpointer, MySQLSaver):
-            self._checkpointer.delete_thread(conversation_id)
+        if isinstance(self._checkpointer, AIOMySQLSaver):
+            await self._checkpointer.delete_thread(conversation_id)
+
 
     async def close_connection_pools(self):
         """

@@ -5,7 +5,11 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import List
+from ai_core import CHROMA_DB_DEFAULT_PERSIST_DIR
 from ai_core.conversation.message.base import DaisyMessageRole
+from ai_core.data_source.base import create_data_source, create_data_source_tool
+from ai_core.data_source.utils.utils import create_collection_name
+from ai_core.llm_api_provider import LlmApiProvider
 from app.endpoint.tools import construct_file_save_path, convert_db_tool_to_pydantic
 from app.models import Message , MessageCreate
 from app.database import SessionLocal, get_db , KST
@@ -79,6 +83,7 @@ async def create_message(
     _temperature=pydash.clone_deep(db_conversation.temperature)
     _max_tokens=pydash.clone_deep(db_conversation.max_tokens)
 
+    logger.info(f"create_message: conversation instance ") 
     conversation_instance = ConversationFactory.create_conversation(
         llm_api_provider=_llm_api_provider,
         llm_model=_llm_model,
@@ -113,6 +118,7 @@ async def create_message(
                 messages=add_to_prompt,
                 input_values=variables
             )
+            logger.info(f"create_message: tool append {db_prompt.prompt_title}") 
             conversation_instance.add_prompt(prompt_component)
 
     # tool 추가
@@ -120,6 +126,7 @@ async def create_message(
     for tool in db_conversation.tools:
         pydantic_tool = convert_db_tool_to_pydantic(tool)
         file_save_path = construct_file_save_path(pydantic_tool)
+        logger.info(f"create_message: tool append {tool.name}") 
         conversation_instance.add_tool(tool.name,session_data.nickname,file_save_path)
         # logger.info(f"functionName for debug: {conversation_instance.tools[0].name}")
 
@@ -146,10 +153,39 @@ async def create_message(
             # agent_tool = load_tool("add_two_numbers", "egnarts", '../tool/add.py')
             agent_tool = load_tool(db_agent_tool.name, session_data.nickname, file_save_path_agent)
             # conversation_instance.add_tool(db_agent_tool.name,session_data.nickname,file_save_path_agent)
+            logger.info(f"create_message: agent_tools append {db_agent_tool.name}") 
             agent_tools.append(agent_tool)
             # logger.info(f"functionName for debug: {conversation_instance.tools[0].name}")
         
-
+        # datasources
+        for db_agent_datasource in db_agent.datasources:
+            agent_data_source = create_data_source(
+                data_source_name=db_agent_datasource.name,
+                created_by=db_agent_datasource.create_user_info.nickname,
+                description=db_agent_datasource.description,
+                data_source_type=db_agent_datasource.datasource_type
+            )
+            for db_agent_embedding in db_agent_datasource.embeddings:
+                # 데이터 소스에 컬렉션 추가
+                agent_collection_name = create_collection_name(agent_data_source.id, db_agent_embedding.embedding_model)
+                agent_collection = agent_data_source.add_collection(
+                    collection_name=agent_collection_name,
+                    llm_api_provider=LlmApiProvider(db_agent_embedding.llm_api.llm_api_provider),
+                    llm_api_key=db_agent_embedding.llm_api.llm_api_key,
+                    llm_api_url=db_agent_embedding.llm_api.llm_api_url,
+                    llm_embedding_model_name=db_agent_embedding.embedding_model,
+                    persist_directory=CHROMA_DB_DEFAULT_PERSIST_DIR
+                    ,last_update_succeeded_at = db_agent_embedding.success_at
+                )
+            latest_collection_agent = agent_data_source.get_latest_collection()
+            if latest_collection_agent is not None:
+                agent_datasource_tool = create_data_source_tool(
+                    name=db_agent_datasource.name,
+                    username=db_agent_datasource.create_user_info.nickname,
+                    datasource=agent_data_source
+                )
+                logger.info(f"create_message: agent_tools datasource append {db_agent_datasource.name}") 
+                agent_tools.append(agent_datasource_tool)
         # add agent
         conversation_instance.add_agent(
             name=db_agent.name,
@@ -157,6 +193,32 @@ async def create_message(
             chat_model=chat_model,
             tools=agent_tools
         )
+        
+    # datasource 추가
+    for db_datasource in db_conversation.datasources:
+        data_source = create_data_source(
+            data_source_name=db_datasource.name,
+            created_by=db_datasource.create_user_info.nickname,
+            description=db_datasource.description,
+            data_source_type=db_datasource.datasource_type
+        )
+        for db_embedding in db_datasource.embeddings:
+            # # 3. 데이터 소스에 컬렉션 추가
+            collection_name = create_collection_name(data_source.id, db_embedding.embedding_model)
+            collection = data_source.add_collection(
+                collection_name=collection_name,
+                llm_api_provider=LlmApiProvider(db_embedding.llm_api.llm_api_provider),
+                llm_api_key=db_embedding.llm_api.llm_api_key,
+                llm_api_url=db_embedding.llm_api.llm_api_url,
+                llm_embedding_model_name=db_embedding.embedding_model,
+                persist_directory=CHROMA_DB_DEFAULT_PERSIST_DIR
+                ,last_update_succeeded_at = db_embedding.success_at
+            )
+        latest_collection = data_source.get_latest_collection()
+        if latest_collection is not None:
+            logger.info(f"create_message: add_datasource {db_datasource.name}")  
+            conversation_instance.add_datasource(db_datasource.name,db_datasource.create_user_info.nickname,data_source)
+            
 
     return_response = []
     db_message_human = database.Message(
@@ -174,29 +236,43 @@ async def create_message(
     
 
     processed_messages = []
+    messages_all = []
+    
     async def save_db():
-        for processed_message in processed_messages:
+            
+        for message_ai in messages_all:
+            if isinstance(message_ai.message, list):
+                joined_texts = ''.join([msg['text'].encode('utf-8').decode('utf-8') for msg in message_ai.message if 'text' in msg])
+
+            elif isinstance(message_ai.message, str):
+                joined_texts = message_ai.message
+            else:
+                joined_texts = message_ai.message
             db_message_ai = database.Message(
-                conversation_id = processed_message['conversation_id'],
-                message_type = processed_message['message_type'],
-                message = processed_message['message'],
-                input_path = processed_message['input_path']
+                conversation_id = db_conversation.conversation_id,
+                message_type = message_ai.role.value,
+                message = joined_texts,
+                input_path = 'conversation'
             )
+            
             db.add(db_message_ai)
             db.flush()
             db_conversation.last_message_id = db_message_ai.message_id
-
-        
-        
-
-
-
+            
+            
+        # used tokend
+        used_tokens = db_conversation.used_tokens
+        if used_tokens is None:
+            used_tokens = 0
+        db_conversation.used_tokens = used_tokens + pydash.sum_by(processed_messages,'tokens_usage')
     async def message_generator():
         try: 
+            logger.info("create_message: conversation invoke")
             await conversation_instance.create_agent(debug=True)
             async for message_ai in conversation_instance.invoke(db_conversation.conversation_id, message.message):
                 if isinstance(message_ai.message, list):
-                    joined_texts = "".join([msg['text'] for msg in message_ai.message if 'text' in msg])
+                    joined_texts = ''.join([msg['text'].encode('utf-8').decode('utf-8') for msg in message_ai.message if 'text' in msg])
+
                 elif isinstance(message_ai.message, str):
                     joined_texts = message_ai.message
                 else:
@@ -209,17 +285,22 @@ async def create_message(
                 except ValueError:
                     # If an error occurs, it means `joined_texts` is not a JSON string
                     is_json = False
-                
+                tokens_usage = 0
+                if hasattr(message_ai,'tokens_usage') :
+                    if message_ai.tokens_usage is not None:
+                        tokens_usage = message_ai.tokens_usage.total_tokens
                 processed_message = {
                     "conversation_id": db_conversation.conversation_id,
                     "message_type": message_ai.role.value,
                     "message": json.loads(joined_texts) if is_json else joined_texts ,
                     "sent_at": datetime.now(KST).strftime('%Y-%m-%dT%H:%M:%S'),
-                    "input_path": "conversation"
+                    "input_path": "conversation",
+                    "tokens_usage" : tokens_usage
                 }
                 processed_messages.append(processed_message)
+                messages_all.append(message_ai)
                 # yield processed_message
-                yield json.dumps(processed_message) + "\n"
+                yield json.dumps(processed_message,ensure_ascii=False) + "\n"
 
             await save_db()
             db.commit()
@@ -248,7 +329,7 @@ async def create_message(
                 # "traceback": format_traceback(e)
             }
             
-            yield json.dumps(error_message) + "\n"
+            yield json.dumps(error_message,ensure_ascii=False) + "\n"
             # yield json.dumps(e.body)
             # yield e
 
@@ -313,7 +394,7 @@ async def test_tool_call_db(db: Session = Depends(get_db)):
         # smart_bee_conversation.clear("session2")
         # messages = smart_bee_conversation.invoke("session2", "3과 4를 더한 결과는?")
         messages = [] 
-        smart_bee_conversation.clear(conversation_id)       
+        await smart_bee_conversation.clear(conversation_id)
         async for m in smart_bee_conversation.invoke(conversation_id, "50과 12를 더한 결과는?"):
             print(m)
             messages.append(m)
@@ -365,7 +446,7 @@ async def test_tool_call(db: Session = Depends(get_db)):
         # smart_bee_conversation.clear("session2")
         # messages = smart_bee_conversation.invoke("session2", "3과 4를 더한 결과는?")
         messages = [] 
-        smart_bee_conversation.clear(conversation_id)       
+        await smart_bee_conversation.clear(conversation_id)
         async for m in smart_bee_conversation.invoke(conversation_id, "50 과 12 를 더한 결과는?"):
             print(m)
             messages.append(m)
@@ -398,7 +479,8 @@ async def create_message_stream(
     session_data: SessionData = Depends(verifier)
 ):
     db_conversation = db.query(database.Conversation).filter(database.db_comment_endpoint).filter(database.Conversation.conversation_id==message.conversation_id).first()
-
+    
+    logger.info(f"create_message_stream: conversation instance ") 
     conversation_instance = ConversationFactory.create_conversation(
         llm_api_provider=db_conversation.llm_api.llm_api_provider,
         llm_model=db_conversation.llm_model,
@@ -435,6 +517,7 @@ async def create_message_stream(
                 messages=add_to_prompt,
                 input_values=variables
             )
+            logger.info(f"create_message_stream: tool append {db_prompt.prompt_title}") 
             conversation_instance.add_prompt(prompt_component)
 
 
@@ -442,8 +525,101 @@ async def create_message_stream(
     for tool in db_conversation.tools:
         pydantic_tool = convert_db_tool_to_pydantic(tool)
         file_save_path = construct_file_save_path(pydantic_tool)
+        logger.info(f"create_message_stream: tool append {tool.name}") 
         conversation_instance.add_tool(tool.name,session_data.nickname,file_save_path)
         
+        
+    # agent 추가
+    for db_agent in db_conversation.agents:
+        # chat_model
+        chat_model = create_chat_model(
+            llm_api_provider=db_agent.llm_api.llm_api_provider,
+            llm_model=db_agent.llm_model,
+            llm_api_key=db_agent.llm_api.llm_api_key,
+            llm_api_url=db_agent.llm_api.llm_api_url,
+            temperature=db_conversation.temperature,
+            max_tokens=db_conversation.max_tokens
+        )
+
+        # prompt. please complete below area
+
+        # tool
+        agent_tools = []
+        for db_agent_tool in db_agent.tools:
+            pydantic_tool_agent = convert_db_tool_to_pydantic(db_agent_tool)
+            file_save_path_agent = construct_file_save_path(pydantic_tool_agent)
+            logger.info(f"file_save_path_agent: {file_save_path_agent}")
+            # agent_tool = load_tool("add_two_numbers", "egnarts", '../tool/add.py')
+            agent_tool = load_tool(db_agent_tool.name, session_data.nickname, file_save_path_agent)
+            # conversation_instance.add_tool(db_agent_tool.name,session_data.nickname,file_save_path_agent)
+            logger.info(f"create_message_stream: agent_tools append {db_agent_tool.name}") 
+            agent_tools.append(agent_tool)
+            # logger.info(f"functionName for debug: {conversation_instance.tools[0].name}")
+        
+                # datasources
+        for db_agent_datasource in db_agent.datasources:
+            agent_data_source = create_data_source(
+                data_source_name=db_agent_datasource.name,
+                created_by=db_agent_datasource.create_user_info.nickname,
+                description=db_agent_datasource.description,
+                data_source_type=db_agent_datasource.datasource_type
+            )
+            for db_agent_embedding in db_agent_datasource.embeddings:
+                # 데이터 소스에 컬렉션 추가
+                agent_collection_name = create_collection_name(agent_data_source.id, db_agent_embedding.embedding_model)
+                agent_collection = agent_data_source.add_collection(
+                    collection_name=agent_collection_name,
+                    llm_api_provider=LlmApiProvider(db_agent_embedding.llm_api.llm_api_provider),
+                    llm_api_key=db_agent_embedding.llm_api.llm_api_key,
+                    llm_api_url=db_agent_embedding.llm_api.llm_api_url,
+                    llm_embedding_model_name=db_agent_embedding.embedding_model,
+                    persist_directory=CHROMA_DB_DEFAULT_PERSIST_DIR
+                    ,last_update_succeeded_at = db_agent_embedding.success_at
+                )
+            latest_collection_agent = agent_data_source.get_latest_collection()
+            if latest_collection_agent is not None:
+                agent_datasource_tool = create_data_source_tool(
+                    name=db_agent_datasource.name,
+                    username=db_agent_datasource.create_user_info.nickname,
+                    datasource=agent_data_source
+                )
+                logger.info(f"create_message_stream: agent_tools datasource append {db_agent_datasource.name}") 
+                agent_tools.append(agent_datasource_tool)
+
+        # add agent
+        conversation_instance.add_agent(
+            name=db_agent.name,
+            description=db_agent.description,
+            chat_model=chat_model,
+            tools=agent_tools
+        )
+        
+    # datasource 추가
+    for db_datasource in db_conversation.datasources:
+        data_source = create_data_source(
+            data_source_name=db_datasource.name,
+            created_by=db_datasource.create_user_info.nickname,
+            description=db_datasource.description,
+            data_source_type=db_datasource.datasource_type
+        )
+        for db_embedding in db_datasource.embeddings:
+            # # 3. 데이터 소스에 컬렉션 추가
+            collection_name = create_collection_name(data_source.datasource_id, db_embedding.embedding_model)
+            collection = data_source.add_collection(
+                collection_name=collection_name,
+                llm_api_provider=LlmApiProvider(db_embedding.llm_api.llm_api_provider),
+                llm_api_key=db_embedding.llm_api.llm_api_key,
+                llm_api_url=db_embedding.llm_api.llm_api_url,
+                llm_embedding_model_name=db_embedding.embedding_model,
+                persist_directory=CHROMA_DB_DEFAULT_PERSIST_DIR
+                ,last_update_succeeded_at = db_embedding.success_at
+            )
+        latest_collection = data_source.get_latest_collection()
+        if latest_collection is not None:
+            logger.info(f"create_message_stream: add_datasource {db_datasource.name}")  
+            conversation_instance.add_datasource(db_datasource.name,db_datasource.create_user_info.nickname,data_source)
+            
+    
     db_message = database.Message(
         conversation_id = message.conversation_id,
         message_type = 'human',
@@ -466,7 +642,8 @@ async def create_message_stream(
             group_message = grouped_responses[ai_message_id]
             first_message = group_message[0]
             if first_message : 
-                joined_messages = "".join([chunk.message for chunk in group_message])
+                joined_messages = ''.join([chunk.message.encode('utf-8').decode('utf-8') for chunk in group_message])
+                
                 db_message_ai = database.Message(
                     conversation_id = db_conversation.conversation_id,
                     message_type = first_message.role.value,
@@ -477,7 +654,15 @@ async def create_message_stream(
                 db.add(db_message_ai)
                 added_messages.append(db_message_ai)
             
-
+        # used tokend
+        total_tokens_usage = pydash.chain(collected_response_all) \
+        .map_(lambda x: x.tokens_usage.total_tokens if x.tokens_usage and x.tokens_usage.total_tokens is not None else 0) \
+        .sum_() \
+        .value()
+        used_tokens = db_conversation.used_tokens
+        if used_tokens is None:
+            used_tokens = 0
+        db_conversation.used_tokens = used_tokens + total_tokens_usage
 
         db.flush()  # Commit to get the message ID
         db_conversation.last_conversation_time = datetime.now(KST)  # Set current datetime
@@ -489,16 +674,17 @@ async def create_message_stream(
         try:
             # 스트리밍 방식
             await conversation_instance.create_agent(debug=True)
+            logger.info("create_message_stream: conversation stream")
             async for chunk in conversation_instance.stream(message.conversation_id, message.message):
                 collected_response.append(chunk.message)
                 collected_response_all.append(chunk)
                 yield_chunk = {
                     "id" : chunk.id,
-                    "message" : chunk.message,
+                    "message" : chunk.message.encode('utf-8').decode('utf-8'),
                     "message_type" : chunk.role.value,
                     "sent_at": datetime.now(KST).strftime('%Y-%m-%dT%H:%M:%S')
-                }
-                yield json.dumps(yield_chunk)
+                }                
+                yield json.dumps(yield_chunk,ensure_ascii=False)
                 # yield chunk.message_aaa  # 에러유발
             await save_response_to_db()
             db.commit()
@@ -526,7 +712,7 @@ async def create_message_stream(
                 # "traceback": format_traceback(e)
             }
             
-            yield json.dumps(error_message)
+            yield json.dumps(error_message,ensure_ascii=False)
             # yield json.dumps(e.body)
             # yield e
 

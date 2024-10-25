@@ -1,4 +1,5 @@
-from fastapi import FastAPI, Depends, HTTPException, Query
+import logging
+from fastapi import FastAPI, Depends, HTTPException, Query, logger
 from sqlalchemy.orm import Session , joinedload , selectinload
 from sqlalchemy import and_, func, or_ , text , select , exists , insert , delete 
 from pydantic import BaseModel
@@ -40,7 +41,7 @@ router = APIRouter()
         - llm_model (str): The LLM Model. One of the values from the LLM API.
         - temperature (float): The temperature setting for the LLM model.
         - max_tokens (int): The maximum number of tokens for the LLM model.
-        - component_configuration (Optional[str]): (none,component,agent,all)
+        - component_configuration : (none,component,agent,all)
         - prompts (Optional[List[ConversatonPromptCreate]]): A list of prompts with variable replacements.
             - prompt_id (int): The ID of the prompt.
             - variables (Optional[List[PromptVariableValue]]): Optional. A list of variables for the prompt.
@@ -48,6 +49,7 @@ router = APIRouter()
                 - value (str): The value of the variable.
         - tools (List[int]): A list of tool IDs to associate with the conversation.
         - agents (List[int]): A list of agent IDs to associate with the conversation.
+        - datasources (List[int]): A list of agent IDs to associate with the conversation.
     Returns:
         - Conversation: The created conversation object.
     </h3>
@@ -75,7 +77,7 @@ def create_conversation(
     )
     update_data = conversation.dict(exclude_unset=True)
     for key, value in update_data.items():
-        if key not in ["prompts", "tools","agents"]:
+        if key not in ["prompts", "tools","agents","datasources"]:
             setattr(db_conversation, key, value)
 
     db.add(db_conversation)
@@ -134,21 +136,47 @@ def create_conversation(
                     # add database
 
                     db.add(new_message)
+    
+    if update_data['component_configuration'] == 'all':
+        """
+        공개된 도구와 
+        공개된 데이터 소스.
+        """
+        # tool 추가 공개된 tool 을 넣는다.
+        logger.info(f"tool 추가")
+        tools_public = db.query(database.Tool).filter(database.Tool.visibility=='public').all()
         
-    # Add tools to the conversation
-    if 'tools' in update_data:
-        for tool_id in conversation.tools:
-            db_tool = db.query(database.Tool).filter(database.db_comment_endpoint).filter(database.Tool.tool_id == tool_id).first()
-            if db_tool:
-                db_conversation.tools.append(db_tool)
+        for db_tool in tools_public:
+            db_conversation.tools.append(db_tool)
+                
+        logger.info(f"datasource 추가")
+        datasource_public = db.query(database.DataSource).filter(database.DataSource.visibility=='public').all()
+        
+        for db_datasouce in datasource_public:
+            db_conversation.datasources.append(db_datasouce)
+        
+    else:
 
-    # Add agents to the conversation
-    if 'agents' in update_data:
-        for agent_id in conversation.agents:
-            db_agent = db.query(database.Agent).filter(database.db_comment_endpoint).filter(database.Agent.agent_id == agent_id).first()
-            if db_agent:
-                db_conversation.agents.append(db_agent)
+        # Add tools to the conversation
+        if 'tools' in update_data:
+            for tool_id in conversation.tools:
+                db_tool = db.query(database.Tool).filter(database.db_comment_endpoint).filter(database.Tool.tool_id == tool_id).first()
+                if db_tool:
+                    db_conversation.tools.append(db_tool)
 
+        # Add agents to the conversation
+        if 'agents' in update_data:
+            for agent_id in conversation.agents:
+                db_agent = db.query(database.Agent).filter(database.db_comment_endpoint).filter(database.Agent.agent_id == agent_id).first()
+                if db_agent:
+                    db_conversation.agents.append(db_agent)
+                    
+        if 'datasources' in update_data:
+            for datasource_id in conversation.datasources:
+                db_datasource = db.query(database.DataSource).filter(database.db_comment_endpoint).filter(database.DataSource.datasource_id == datasource_id).first()
+                if db_datasource:
+                    db_conversation.datasources.append(db_datasource)
+    
     db.flush()
     db.refresh(db_conversation)
 
@@ -237,7 +265,7 @@ async def copy_conversation(
         async_conn_pool=database.async_conn_pool
     )    
     await conversation_instance.create_agent()
-    conversation_instance.copy_conversation(conversation_id=conversation.conversation_id_origin,new_conversation_id=conversation_id)
+    await conversation_instance.copy_conversation(conversation_id=conversation.conversation_id_origin,new_conversation_id=conversation_id)
 
     # 프롬프트
 
@@ -334,6 +362,9 @@ async def convert_to_private(
     # agents
     for db_agent in db_conversation_origin.agents:
         new_db_conversation.agents.append(db_agent)
+        
+    for db_datasource in db_conversation_origin.datasources:
+        new_db_conversation.datasources.append(db_datasource)
 
     # db.refresh(new_db_conversation)
 
@@ -376,7 +407,7 @@ async def convert_to_private(
         async_conn_pool=database.async_conn_pool
     )    
     await conversation_instance.create_agent()
-    conversation_instance.copy_conversation(conversation_id=conversation.conversation_id_origin,new_conversation_id=conversation_id)
+    await conversation_instance.copy_conversation(conversation_id=conversation.conversation_id_origin,new_conversation_id=conversation_id)
 
 
     db.flush()
@@ -419,7 +450,7 @@ async def generate_title(conversation: models.ConversationGenerateTitle, db: Ses
     )
     await conversation_instance.create_agent()
 
-    conversation_title_new = conversation_instance.generate_title(conversation_id=conversation.conversation_id)
+    conversation_title_new = await conversation_instance.generate_title(conversation_id=conversation.conversation_id)
     db_conversation.conversation_title = conversation_title_new
     db.flush()
     db.refresh(db_conversation)
@@ -506,6 +537,8 @@ def read_conversations(
             (e.g., [1,2,10]).
         - llm_model_list (Optional): List of LLM models to filter by.
             (e.g., 'gpt-4o','gpt-4','gpt-3.5').
+        - datasource_list (Optional): List of Data Source to filter by.
+            (e.g., ['ds-user1-confluence_0920_001','ds-user1-docx_0919_010','ds-user1-text_0909']).
         - skip (Optional): The number of records to skip for pagination.
         - limit (Optional): The maximum number of records to return for pagination.
     </pre>
@@ -609,20 +642,13 @@ def search_conversation(
 
         # 본테이블에서 검색한다.
         query = query.filter(database.Conversation.llm_model.in_(search_exclude['llm_model_list']))
+        
+    if 'datasource_list' in search_exclude and len(search_exclude['datasource_list']) > 0:
+        query = query.filter(database.Conversation.datasources.in_(search_exclude['datasource_list']))
  
     total_count = query.count()
 
-    query = query.options(
-        selectinload(database.Conversation.messages),
-        selectinload(database.Conversation.prompts),
-        selectinload(database.Conversation.tools)
-            .selectinload(database.Tool.tags),
-        selectinload(database.Conversation.llm_api)
-            .selectinload(database.LlmApi.create_user_info),
-        selectinload(database.Conversation.user_info),
-        selectinload(database.Conversation.variables),
-        selectinload(database.Conversation.agents)
-    )
+
 
     query = query.order_by(database.Conversation.last_conversation_time.desc())   
     # Apply pagination
@@ -633,6 +659,18 @@ def search_conversation(
     #     joinedload(database.Conversation.messages) ,
     #     joinedload(database.Conversation.llm_api)
     # ).all()
+    query = query.options(
+        selectinload(database.Conversation.messages),
+        selectinload(database.Conversation.prompts),
+        selectinload(database.Conversation.tools)
+            .selectinload(database.Tool.tags),
+        selectinload(database.Conversation.llm_api)
+            .selectinload(database.LlmApi.create_user_info),
+        selectinload(database.Conversation.user_info),
+        selectinload(database.Conversation.variables),
+        selectinload(database.Conversation.agents),
+        selectinload(database.Conversation.datasources)
+    )
     conversations = query.all()
 
     # Convert SQLAlchemy models to Pydantic models
@@ -663,6 +701,8 @@ def search_conversation(
             (e.g., [1,2,10]).
         - llm_model_list (Optional): List of LLM models to filter by.
             (e.g., 'gpt-4o','gpt-4','gpt-3.5').
+        - datasource_list (Optional): List of Data Source to filter by.
+            (e.g., ['ds-user1-confluence_0920_001','ds-user1-docx_0919_010','ds-user1-text_0909']).
         - skip (Optional): The number of records to skip for pagination.
         - limit (Optional): The maximum number of records to return for pagination.
     </pre>
@@ -731,7 +771,10 @@ def search_conversation_all(
     
     if 'llm_model_list' in search_exclude and len(search_exclude['llm_model_list']) > 0:
         query = query.filter(database.Conversation.llm_model.in_(search_exclude['llm_model_list']))
- 
+        
+    if 'datasource_list' in search_exclude and len(search_exclude['datasource_list']) > 0:
+        query = query.filter(database.Conversation.datasources.in_(search_exclude['datasource_list']))
+        
     total_count = query.count()
 
     query = query.options(
@@ -743,7 +786,8 @@ def search_conversation_all(
             .selectinload(database.LlmApi.create_user_info),
         selectinload(database.Conversation.user_info),
         selectinload(database.Conversation.variables),
-        selectinload(database.Conversation.agents)
+        selectinload(database.Conversation.agents),
+        selectinload(database.Conversation.datasources)
     )
 
     query = query.order_by(database.Conversation.last_conversation_time.desc())   
@@ -777,13 +821,14 @@ def search_conversation_all(
         - conversation_title (Optional[str]): 대화제목
         - conversation_type (Optional[str]): 대화종류 private public
         - llm_api_id (Optional[int]): 대화종류 private public
+        - llm_model (Optional[str]): LLM Model. LLM API에서 입력된 값중 하나만 입력
         - temperature (Optional[float]): 
         - max_tokens (Optional[int]): 최대토큰
         - used_tokens (Optional[int]): 토큰사용량
         - last_conversation_time (Optional[datetime]): 마지막 대화시간
         - last_message_id (Optional[int]): 메세지ID
         - started_at (Optional[datetime]): 생성일
-        - component_configuration (Optional[str]): (none,component,agent,all)
+        - component_configuration : (none,component,agent,all)
         - prompts (List[ConversatonPromptCreate]): A list of prompts with variable replacements.
             - prompt_id (int): The ID of the prompt.
             - variables (Optional[List[PromptVariableValue]]): Optional. A list of variables for the prompt.
@@ -791,6 +836,7 @@ def search_conversation_all(
                 - value (str): The value of the variable.
         - tools (List[int]): A list of tool IDs to associate with the conversation.
         - agents (List[int]): A list of agent IDs to associate with the conversation.
+        - datasources (List[int]): A list of agent IDs to associate with the conversation.
     </h3>
     </pre>
     """
@@ -821,7 +867,7 @@ def update_conversation(conversation_id: str, conversation: models.ConversationU
 
     
     for key, value in params_ex.items():
-        if key not in ["prompts", "tools","agents"]:
+        if key not in ["prompts", "tools","agents","datasources"]:
             setattr(db_conversation, key, value)
     
 
@@ -895,32 +941,60 @@ def update_conversation(conversation_id: str, conversation: models.ConversationU
 
     # Remove existing tools and add new ones
     # [] 로 보낸다면 삭제하겠다는 의미
-    if 'tools' in params_ex:
-        # 이 부분이 먹히는지 테스트한다. many to many 는 먹힌다.
+    if params_ex['component_configuration'] == 'all':
+        """
+        공개된 도구와 
+        공개된 데이터 소스.
+        """
+        # tool 추가 공개된 tool 을 넣는다.
+        logger.info(f"tool 추가")
+        tools_public = db.query(database.Tool).filter(database.Tool.visibility=='public').all()
         db_conversation.tools = []
-        for tool_id in params_ex['tools']:
-            db_tool = db.query(database.Tool).filter(database.db_comment_endpoint).filter(database.Tool.tool_id == tool_id).first()
-            if db_tool:
-                db_conversation.tools.append(db_tool)
-    
-    # Update agents to the conversation
-    # Remove and update
-    if 'agents' in params_ex:
-        db_conversation.agents = []
-        for agent_id in conversation.agents:
-            db_agent = db.query(database.Agent).filter(database.db_comment_endpoint).filter(database.Agent.agent_id == agent_id).first()
-            if db_agent:
-                db_conversation.agents.append(db_agent)
+        for db_tool in tools_public:
+            db_conversation.tools.append(db_tool)
+                
+        logger.info(f"datasource 추가")
+        datasource_public = db.query(database.DataSource).filter(database.DataSource.visibility=='public').all()
+        db_conversation.datasources = []
+        for db_datasouce in datasource_public:
+            db_conversation.datasources.append(db_datasouce)
+        
+    else:
+        if 'tools' in params_ex:
+            # 이 부분이 먹히는지 테스트한다. many to many 는 먹힌다.
+            db_conversation.tools = []
+            for tool_id in params_ex['tools']:
+                db_tool = db.query(database.Tool).filter(database.db_comment_endpoint).filter(database.Tool.tool_id == tool_id).first()
+                if db_tool:
+                    db_conversation.tools.append(db_tool)
+        
+        # Update agents to the conversation
+        # Remove and update
+        if 'agents' in params_ex:
+            db_conversation.agents = []
+            for agent_id in conversation.agents:
+                db_agent = db.query(database.Agent).filter(database.db_comment_endpoint).filter(database.Agent.agent_id == agent_id).first()
+                if db_agent:
+                    db_conversation.agents.append(db_agent)
+                    
+        if 'datasources' in params_ex:
+            db_conversation.datasources = []
+            for datasource_id in conversation.datasources:
+                db_datasource = db.query(database.DataSource).filter(database.db_comment_endpoint).filter(database.DataSource.datasource_id == datasource_id).first()
+                if db_datasource:
+                    db_conversation.datasources.append(db_datasource)
 
     db.flush()
     db.refresh(db_conversation)
     return db_conversation
 
 @router.delete("/conversations/{conversation_id}", response_model=Conversation, dependencies=[Depends(cookie)],tags=["Conversations"])
-def delete_conversation(conversation_id: str, db: Session = Depends(get_db) ,session_data: SessionData = Depends(verifier)):
+async def delete_conversation(conversation_id: str, db: Session = Depends(get_db) ,session_data: SessionData = Depends(verifier)):
     db_conversation = db.query(database.Conversation).filter(database.db_comment_endpoint).filter(database.Conversation.conversation_id == conversation_id).first()
     if db_conversation is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
+    
+    
     # Convert to Pydantic model before deleting
     conversation_data = Conversation.from_orm(db_conversation)
 
@@ -929,6 +1003,20 @@ def delete_conversation(conversation_id: str, db: Session = Depends(get_db) ,ses
     db.delete(db_conversation)
     db.flush()
     # db.refresh(db_conversation)
+    
+    # checkpoint 대화삭제
+    conversation_instance = ConversationFactory.create_conversation(
+        llm_api_provider=db_conversation.llm_api.llm_api_provider,
+        llm_model=db_conversation.llm_model,
+        llm_api_key=db_conversation.llm_api.llm_api_key,
+        llm_api_url=db_conversation.llm_api.llm_api_url,
+        temperature=db_conversation.temperature,
+        max_tokens=db_conversation.max_tokens,
+        sync_conn_pool=database.sync_conn_pool, 
+        async_conn_pool=database.async_conn_pool
+    )  
+    await conversation_instance.clear(conversation_id)
+    
     return conversation_data
 
 

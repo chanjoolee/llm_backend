@@ -52,6 +52,3 @@ def flink_jira_issue_retriever_tool(query: str):
         import traceback
         stack_trace = traceback.format_exc()
         return stack_trace
-
-
-print(flink_jira_issue_retriever_tool("플링크 최근 이슈"))

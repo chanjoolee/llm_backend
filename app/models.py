@@ -25,6 +25,9 @@ ConversatonPromptCreate = ForwardRef('ConversatonPromptCreate')
 class Visibility(str, Enum):
     PRIVATE = "private"
     PUBLIC = "public"
+class MediaType(str, Enum):
+    TEXT = "text/plain"
+    JSON = "application/json"
 class CommonCodeGroupBase(BaseModel):
     code_group: str
     group_desc: Optional[str] = None
@@ -120,6 +123,7 @@ class ConversationSearch(BaseModel):
     user_list: Optional[List[str]] = [] # multi-select for 사용자
     llm_api_list : Optional[List[int]] = []
     llm_model_list: Optional[List[str]] = []# multi-select for 텍스트 생성 모델 gpt-4o
+    datasource_list : Optional[List[str]] = []
     skip: Optional[int] = 0
     limit: Optional[int] = 10
 
@@ -130,7 +134,7 @@ def default_conversation_title():
 class ConversationBase(BaseModel):
     conversation_title: str = "Conversation_"
     conversation_type : str ='private' # public
-    llm_api_id : int = 1
+    llm_api_id : Optional[int] = Field(None,description="LLM API ID " )
     llm_model : str =  Field('gpt-4o', description="LLM Model. LLM API에서 입력된 값중 하나만 입력")
     temperature: float = 0.5
     max_tokens : int = 1024
@@ -142,6 +146,7 @@ class ConversationCreate(ConversationBase):
     prompts: Optional[List[ConversatonPromptCreate]] = None
     tools: Optional[List[int]] = None  # List of tool IDs
     agents: Optional[List[int]] = None  # List of agent IDs
+    datasources: Optional[List[str]] = Field(None, description="List of datasources IDs")
     
 
 class ConversatonPromptCreate(BaseModel):
@@ -153,6 +158,7 @@ class ConversationUpdate(BaseModel):
     conversation_title: Optional[str] = Field("conversation", description="대화제목")
     conversation_type: Optional[str] = Field("private", description="대화종류 private public")
     llm_api_id: Optional[int] = Field(None, description="대화종류 private public")
+    llm_model : Optional[str] =  Field('gpt-4o', description="LLM Model. LLM API에서 입력된 값중 하나만 입력")
     temperature: Optional[float] = Field(0.5, description="")
     max_tokens: Optional[int] = Field(1024, description="최대토큰")
     used_tokens: Optional[int] = Field(0, description="토큰사용량")
@@ -163,6 +169,7 @@ class ConversationUpdate(BaseModel):
     prompts: Optional[List[ConversatonPromptCreate]] = None
     tools: Optional[List[int]] = Field(None, description="List of tools IDs")
     agents: Optional[List[int]] = Field(None, description="List of agent IDs")
+    datasources: Optional[List[str]] = Field(None, description="List of datasources IDs")
 
 
 class ConversationCopy(BaseModel):
@@ -194,6 +201,7 @@ class Conversation(ConversationBase):
     user_info : Optional[User] = None
     variables: Optional[List[ConversationVariable]] = []
     agents : Optional[List["Agent"]] = []
+    datasources : Optional[List["Datasource"]] = []
 
     class Config:
         from_attributes = True
@@ -503,6 +511,7 @@ class AgentCreate(AgentBase):
     tools: Optional[List[int]] = None  # List of tool IDs
     tags: Optional[List[int]] = None  # List of tag IDs
     sub_agents: Optional[List[int]] = None
+    datasources : Optional[List[str]] = Field([],description="List of datasources id")
 
 class AgentUpdate(BaseModel):
     name: Optional[str] = None
@@ -514,6 +523,7 @@ class AgentUpdate(BaseModel):
     tools: Optional[List[int]] = None  # List of tool IDs
     tags: Optional[List[int]] = None  # List of tag IDs
     sub_agents: Optional[List[int]] = None
+    datasources : Optional[List[str]] = Field([],description="List of datasources id")
 
 class AgentVariable(BaseModel):
     variable_id: int
@@ -537,6 +547,7 @@ class Agent(AgentBase):
     tags: Optional[List[Tag]] = []
     variables: Optional[List[AgentVariable]] = None
     sub_agents: Optional[List["Agent"]] = None
+    datasources : Optional[List["Datasource"]] = Field([],description="List of datasources")
 
     class Config:
         from_attributes = True
@@ -571,6 +582,7 @@ class DatasourceBase(BaseModel):
     project_key: Optional[str] = Field(None, description="Project key for JIRA")
     start: Optional[int] = Field(None, description="Start index for JIRA issues")
     limit: Optional[int] = Field(None, description="Limit for JIRA issues")
+    token: Optional[str] = Field(None, description="API Token for JIRA")
     
     space_key: Optional[str] = Field(None, description="Space key for Confluence")
     
@@ -596,6 +608,7 @@ class Datasource(DatasourceBase):
     tags: List[Tag] = []
     # embeddings
     embeddings : List["Embedding"] = []
+    create_user_info : Optional[User]
     class Config:
         from_attributes = True
 
@@ -756,16 +769,8 @@ class EmbeddingCreate(EmbeddingBase):
         return value
     
 # Pydantic model for updating an embedding
-class EmbeddingUpdate(EmbeddingBase):
-    embedding_id: str = Field(..., description="ID of the embedding being updated")
-    
-    
-
-    @field_validator("embedding_id", "datasource_id", mode='before')
-    def validate_ids(cls, value):
-        if not value:
-            raise ValueError("Both embedding_id and datasource_id must be provided.")
-        return value
+class EmbeddingUpdate(EmbeddingCreate):
+    datasource_id: Optional[str] = Field(None, description="Data source ID for which embedding is created")
     
 
 class Embedding(EmbeddingBase):
@@ -792,3 +797,11 @@ class EmbeddingSearch(BaseModel):
 class EmbeddingSearchResponse(BaseModel):
     total_count: int  # Total number of results
     list: List[Embedding]  # List of matching embeddings
+    
+    
+class EmbeddingPreview(EmbeddingCreate):
+    splitter: SplitterType = Field(..., description="Splitter type used for preprocessing")
+    
+class EmbeddingSimilaritySearch(BaseModel):
+    embedding_id: str = Field(..., description="Unique identifier for the embedding")
+    query: str = Field(...,description="query for collection")

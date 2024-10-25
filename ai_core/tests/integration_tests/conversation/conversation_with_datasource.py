@@ -6,7 +6,7 @@ from langchain_community.document_loaders import RecursiveUrlLoader
 
 from ai_core.conversation.base import ConversationFactory
 from ai_core.data_source.base import DataSourceType, DataSource
-from ai_core.data_source.utils import create_data_source_id, create_collection_name
+from ai_core.data_source.utils.utils import create_data_source_id, create_collection_name
 from ai_core.data_source.embedding import AzureEmbeddingModelFactory
 from ai_core.data_source.splitter import create_splitter, SplitterType
 from ai_core.time_utils import str_to_datetime

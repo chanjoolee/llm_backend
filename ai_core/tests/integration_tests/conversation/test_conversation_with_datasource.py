@@ -94,7 +94,7 @@ async def test_conversation_with_datasource(smart_bee_conversation: Conversation
         await smart_bee_conversation.create_agent()
 
         session_id = "ds_test_session"
-        smart_bee_conversation.clear(session_id)
+        await smart_bee_conversation.clear(session_id)
 
         # while True:
         #     user = input("User (q/Q to quit): ")

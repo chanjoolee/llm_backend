@@ -146,8 +146,8 @@ def delete_llm_api(llm_api_id: int, db: Session = Depends(get_db) ,session_data:
     if db_llm_api is None:
         raise HTTPException(status_code=404, detail="LLM API not found")
 
-    if db_llm_api.conversation:
-        raise HTTPException(status_code=403, detail="Conversation is aleady exists. You can not delete llm api")
+    # if db_llm_api.conversation:
+    #     raise HTTPException(status_code=403, detail="Conversation is aleady exists. You can not delete llm api")
     
     if db_llm_api.agents:
         raise HTTPException(status_code=403, detail="Agent is aleady exists. You can not delete agent")
