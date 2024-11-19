@@ -71,10 +71,10 @@ class DaisyMessage:
         return self.raw_message.pretty_repr(html=False)
 
     @staticmethod
-    def convert_tool_call_to_daisy_message(tool_call: ToolCall) -> DaisyMessage:
+    def convert_tool_call_to_daisy_message(tool_call: ToolCall, message: Optional[str] = '') -> DaisyMessage:
         return DaisyMessage(
             id=str(tool_call.run_id) + ("-0" if tool_call.inputs else "-1"),
-            message='',
+            message=message,
             role=DaisyMessageRole.AGENT,
             tool_call=tool_call
         )

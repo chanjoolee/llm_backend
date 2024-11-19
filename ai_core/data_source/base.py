@@ -3,26 +3,25 @@ import io
 import json
 import logging
 import random
+import sys
 from abc import abstractmethod
 from datetime import datetime
 from enum import Enum
 from time import sleep
-from typing import Dict, Optional, Any, Callable, Iterable
-import os
-import shutil
+from typing import Dict, Optional, Any, Callable, Iterable, AsyncIterable
 import gitlab
 import base64
-import glob
 
 import langchain_core.documents
 from atlassian import Jira, Confluence
 from gitlab.v4.objects import Project, ProjectFile
 from docx.api import Document as DocxDocument
 
-from ai_core import DATA_SOURCE_SAVE_BASE_DIR, CHROMA_DB_DEFAULT_PERSIST_DIR
 from ai_core.base import ComponentType, create_tool_name
 from ai_core.data_source.model.document import Document, DocumentEncoder
+from ai_core.data_source.utils.opensearch_utils import switch_to_new_index
 from ai_core.data_source.utils.utils import create_data_source_id, bs4_extractor, truncate_content, get_first
+from ai_core.data_source.utils.opensearch_utils import create_opensearch_index_name
 from ai_core.data_source.collection import Collection
 from ai_core.data_source.utils.jira_utils import filter_required_fields, cleanse_fields
 from ai_core.data_source.vectorstore.search_type import Similarity
@@ -33,16 +32,12 @@ from langchain.tools.retriever import create_retriever_tool
 from langchain.tools import Tool
 from langchain_community.document_loaders import RecursiveUrlLoader, UnstructuredPDFLoader, UnstructuredFileLoader
 
-from pydantic import BaseModel, Field
+from opensearchpy import OpenSearch, AsyncOpenSearch
 
+from pydantic import BaseModel, Field, ConfigDict
 
 
 logger = logging.getLogger(__name__)
-
-
-
-class DataSourceFileLockException(Exception):
-    pass
 
 
 class DataSourceType(Enum):
@@ -57,25 +52,43 @@ class DataSourceType(Enum):
 
 
 class DataSource(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     id: str = Field(str, frozen=True)
     name: str = Field(str, frozen=True)
     description: str
     data_source_type: DataSourceType
     collections: Dict[str, Collection] = Field(default_factory=dict)
-    data_dir_path: str = None
-    preview_data: str = Field(str)
+    opensearch_hosts: str
+    opensearch_auth: tuple[str, str]
+    opensearch_client: OpenSearch = None
+    async_opensearch_client: AsyncOpenSearch = None
+    preview_data: str = None
+    save_data_in_progress: bool = Field(default=False)
 
-    SAVE_DIR_BUCKET_SIZE: int = 10000
     PREVIEW_DATA_MAX_LENGTH: int = 10000
 
     def model_post_init(self, __context: Any) -> None:
-        self.data_dir_path = self._get_data_source_save_dir()
-        self.read_preview_data()
+        self.opensearch_client = OpenSearch(
+            hosts = self.opensearch_hosts,
+            http_compress = True,
+            http_auth = self.opensearch_auth,
+            use_ssl = True,
+            verify_certs = False,
+            ssl_show_warn = False
+        )
+
+        self.async_opensearch_client = AsyncOpenSearch(
+            hosts = self.opensearch_hosts,
+            http_compress = True,
+            http_auth = self.opensearch_auth,
+            use_ssl = True,
+            verify_certs = False,
+            ssl_show_warn = False
+        )
 
     def add_collection(self, collection_name: str, llm_api_provider: str, llm_api_key: str, llm_api_url: str,
-                       llm_embedding_model_name: str, collection_metadata: Optional[dict[str, str]] = None,
-                       last_update_succeeded_at: Optional[datetime] = None,
-                       persist_directory: str = CHROMA_DB_DEFAULT_PERSIST_DIR):
+                       llm_embedding_model_name: str, last_update_succeeded_at: Optional[datetime] = None):
 
         collection = Collection(
             datasource_id=self.id,
@@ -84,9 +97,9 @@ class DataSource(BaseModel):
             llm_api_key=llm_api_key,
             llm_api_url=llm_api_url,
             llm_embedding_model_name=llm_embedding_model_name,
-            collection_metadata=collection_metadata,
+            vectorstore_hosts=self.opensearch_hosts,
+            vectorstore_auth=self.opensearch_auth,
             last_update_succeeded_at=last_update_succeeded_at,
-            persist_directory=persist_directory
         )
 
         self.collections[collection.name] = collection
@@ -122,8 +135,12 @@ class DataSource(BaseModel):
             "created_at": datetime_to_str(datetime.now())
         }
 
-        return latest_collection.chroma.as_retriever(
-            search_type=search_type.name, metadata=metadata, search_kwargs=search_type.search_kwargs())
+        index_alias = latest_collection.name
+        search_kwargs = search_type.search_kwargs
+        search_kwargs["index_name"] = index_alias
+
+        return latest_collection.vectorstore.as_retriever(
+            search_type=search_type.name, metadata=metadata, search_kwargs=search_kwargs)
 
     def as_retriever_tool(self, name: str, description: str, search_type=Similarity(k=4)) -> Tool:
         if not name:
@@ -138,7 +155,7 @@ class DataSource(BaseModel):
         )
 
     @abstractmethod
-    def _load_data(self, **kwargs) -> Iterable[Document]:
+    def _download_data(self, **kwargs) -> Iterable[Document]:
         pass
 
     @abstractmethod
@@ -156,95 +173,170 @@ class DataSource(BaseModel):
         except asyncio.CancelledError:
             logger.info(f"Save task of datasource {self.id} was cancelled.")
 
-    async def save_data(self, **kwargs) -> None:
+    def save_data(self, **kwargs) -> dict:
         '''
-        docx, pdf file, confluence 등 다양한 소스로부터 불러온 텍스트 데이터를 파일로 저장합니다.
+        docx, pdf file, confluence 등 다양한 소스로부터 불러온 텍스트 데이터를 opensearch에 저장합니다.
 
         :param kwargs: DataSource의 구현체마다 각각 다른 파라메터를 전달 받습니다.
-        :return:
+        :return result dict: index_name, index_alias, doc_count, doc_total_bytes, doc_max_bytes, doc_min_bytes, doc_avg_bytes
         '''
 
-        lock_file_path = self.data_dir_path + "/.lock"
-        inprogress_dir = self.data_dir_path + ".inprogress"
-
-        if os.path.exists(lock_file_path):
-            logger.warning(f"Request to save data is ignored. {self.data_dir_path} is in use.")
-            raise DataSourceFileLockException(f"{self.data_dir_path} is in use.")
+        if self.save_data_in_progress:
+            raise ValueError("Data saving is already in progress.")
 
         try:
-            os.makedirs(self.data_dir_path, exist_ok=True)
+            self.save_data_in_progress = True
 
-            with open(lock_file_path, "w") as f:
-                f.write("")
+            index_alias = self.id
+            index_name = create_opensearch_index_name(self.id)
+            prev_index_names = self.opensearch_client.indices.get(index=f"{index_alias}_*").keys()
+            result = {"index_name": index_name, "index_alias": index_alias}
 
-            if inprogress_dir:
-                self.delete_inprogress_directory()
+            # Opensearch index 생성
+            logger.info(f"Create opensearch index: {index_name}")
+            self.opensearch_client.indices.create(index=index_name)
 
-            os.makedirs(inprogress_dir)
+            # 문서 다운로드
+            logger.info(f"Download data from {self.data_source_type.name}. {kwargs}")
+            documents: Iterable[Document] = self._download_data(**kwargs)
 
-            documents: Iterable[Document] = self._load_data(**kwargs)
+            # 문서 색인
+            logger.info(f"Indexing documents to opensearch index: {index_name}")
+            doc_count = 0
+            doc_total_bytes = 0
+            doc_max_bytes = 0
+            doc_min_bytes = sys.maxsize
+            for document in documents:
+                json_string = json.dumps(document, cls=DocumentEncoder, indent=2, ensure_ascii=False)
+                try:
+                    self.opensearch_client.index(index=index_name, body=json_string)
+                except Exception as e:
+                    logger.error(f"Error occurred while indexing document: {e}")
+                    continue
 
-            # 한 디렉토리에 너무 많은 파일이 저장되는 것을 방지하기 위해 bucket 단위로 저장합니다.
-            bucket = 0
+                size_bytes = len(json_string.encode('utf-8'))
+                doc_count += 1
+                doc_total_bytes += size_bytes
+                doc_max_bytes = max(doc_max_bytes, size_bytes)
+                doc_min_bytes = min(doc_min_bytes, size_bytes)
 
-            for i, document in enumerate(documents):
-                if i % self.SAVE_DIR_BUCKET_SIZE == 0:
-                    bucket = i // self.SAVE_DIR_BUCKET_SIZE
-                    os.makedirs(inprogress_dir + f"/{bucket}", exist_ok=True)
+            doc_avg_bytes = doc_total_bytes / doc_count
+            result.update({
+                "doc_count": doc_count,
+                "doc_total_bytes": doc_total_bytes,
+                "doc_max_bytes": doc_max_bytes,
+                "doc_min_bytes": doc_min_bytes,
+                "doc_avg_bytes": doc_avg_bytes
+            })
 
-                with open(inprogress_dir + f"/{bucket}/data{i}.txt", "w", encoding="utf-8") as f:
-                    f.write(json.dumps(document, cls=DocumentEncoder, indent=2, ensure_ascii=False))
+            # alias 업데이트
+            logger.info(f"Update opensearch index alias: {index_alias}, index name: {index_name}")
+            switch_to_new_index(self.opensearch_client, index_alias, index_name, prev_index_names)
 
-            self.delete_data_directory()
-            os.rename(inprogress_dir, self.data_dir_path)
+            logger.info(f"Refresh opensearch index: {index_name}")
+            self.opensearch_client.indices.refresh(index=index_name)
 
+            return result
+        except Exception as e:
+            logger.error(f"Error occurred while saving data: {e}")
+            raise e
         finally:
-            if os.path.exists(inprogress_dir):
-                self.delete_inprogress_directory()
-            if os.path.exists(lock_file_path):
-                os.remove(lock_file_path)
+            self.save_data_in_progress = False
 
-    def read_data(self) -> Iterable[Document]:
-        # 텍스트 파일로 저장된 데이터를 불러옵니다.
-        file_paths = glob.glob(self.data_dir_path + "/**/data*.txt")
+    async def read_data(self) -> AsyncIterable[Document]:
+        '''
+        opensearch에서 데이터를 읽어옵니다.
+        '''
 
-        for file_path in file_paths:
-            with open(file_path, "r", encoding="utf-8") as f:
-                data = f.read()
-                json_data = json.loads(data)
-                yield Document(content=json_data["content"], metadata=json_data["metadata"])
+        logger.info(f"Read data from opensearch index: {self.id}")
+        index_alias = self.id
+        client = self.async_opensearch_client
+        last_sort = None
+        retrieved_size = 1000
 
-    def read_preview_data(self) -> str:
-        # 이미 저장된 텍스트 파일이 있다면 불러옵니다.
-        # preview data는 데이터소스 화면에 보여주기 위한 용도로 사용합니다.
+        while retrieved_size == 1000:
+            body = {
+                "query": {"match_all": {}},
+                "sort": [{"_id": "asc"}],
+                "search_after": last_sort,
+                "size": 1000
+            }
+            if not last_sort:
+                body.pop("search_after")
 
-        first_file = self.data_dir_path + "/0/data0.txt"
+            response = await client.search(
+                index=index_alias,
+                body=body
+            )
 
-        if os.path.isfile(first_file):
-            with open(first_file, "r", encoding="utf-8") as f:
-                content = f.read()
-                if len(content) > self.PREVIEW_DATA_MAX_LENGTH:
-                    content = content[:self.PREVIEW_DATA_MAX_LENGTH]
-                    self.preview_data = content
+            hits = response['hits']['hits']
+            retrieved_size = len(hits)
+
+            if len(hits) > 0:
+                last_sort = hits[-1]['sort']
+
+            for hit in hits:
+                yield Document(**hit["_source"])
+
+    async def read_preview_data(self) -> str:
+        index_alias = self.id
+        client = self.async_opensearch_client
+
+        if self.preview_data:
+            return self.preview_data
+        if not await client.indices.exists(index=index_alias):
+            self.preview_data = ""
+            return self.preview_data
+
+        query = {
+            "size": 1,
+            "from": 0,
+            "query": {
+                "match_all": {}
+            }
+        }
+
+        result = await self.async_opensearch_client.search(
+            index=index_alias,
+            body=query,
+            size=1
+        )
+
+        if result["hits"]["hits"]:
+            content = result["hits"]["hits"][0]["_source"]["content"]
+            self.preview_data = truncate_content(content, self.PREVIEW_DATA_MAX_LENGTH)
+        else:
+            self.preview_data = ""
 
         return self.preview_data
 
-    def delete_data_directory(self):
-        if os.path.exists(self.data_dir_path):
-            logger.info(f"Delete data directory: {self.data_dir_path}")
-            shutil.rmtree(self.data_dir_path)
+    def delete_data(self) -> None:
+        client = self.opensearch_client
+        index_alias = self.id
+        index_names = []
 
-    def delete_inprogress_directory(self):
-        if os.path.exists(self.data_dir_path + ".inprogress"):
-            logger.info(f"Deleting inprogress directory: {self.data_dir_path}.inprogress")
-            shutil.rmtree(self.data_dir_path + ".inprogress")
+        if client.indices.exists_alias(name=index_alias):
+            index_names = client.indices.get_alias(name=index_alias).keys()
 
-    def _get_data_source_save_dir(self) -> str:
-        return DATA_SOURCE_SAVE_BASE_DIR + f"/{self.id}"
+        for index_name in index_names:
+            logger.info(f"Delete opensearch index: {index_name}")
+            client.indices.delete(index=index_name)
+
+    async def adelete_data(self) -> None:
+        client = self.async_opensearch_client
+        index_alias = self.id
+        index_names = []
+
+        if await client.indices.exists_alias(name=index_alias):
+            index_names = (await client.indices.get_alias(name=index_alias)).keys()
+
+        for index_name in index_names:
+            logger.info(f"Delete opensearch index: {index_name}")
+            await client.indices.delete(index=index_name)
 
 
 class TextDataSource(DataSource):
-    def _load_data(self, raw_text: Iterable[str]) -> Iterable[Document]:
+    def _download_data(self, raw_text: Iterable[str]) -> Iterable[Document]:
         for content in raw_text:
             yield Document(content=content, metadata={})
 
@@ -258,7 +350,7 @@ class PdfFileDataSource(DataSource):
 
         return {"file_name": file_name} if file_name else {}
 
-    def _load_data(self, pdf_file_path: str) -> Iterable[Document]:
+    def _download_data(self, pdf_file_path: str) -> Iterable[Document]:
         loader = UnstructuredPDFLoader(pdf_file_path)
         docs = loader.lazy_load()
 
@@ -290,7 +382,9 @@ class ConfluenceDataSource(DataSource):
         if page.get("title"):
             metadata["title"] = page["title"]
         if page.get("_links") and page["_links"].get("webui"):
-            metadata["url"] = f"{confluence.url}{page["_links"]["webui"]}"
+            webui_link = page["_links"]["webui"]
+            webui_link = webui_link[1:] if webui_link.startswith("/") else webui_link
+            metadata["url"] = f"{confluence.url}{webui_link}"
 
         return metadata if metadata else {}
 
@@ -339,7 +433,7 @@ class ConfluenceDataSource(DataSource):
     :param access_token: Confluence API 토큰
     :param batch_size: 한 번에 가져올 페이지 수. 최대 100개까지 가능합니다.
     '''
-    def _load_data(self, url: str, access_token: str, space_key: str, batch_size: int = 100) -> Iterable[Document]:
+    def _download_data(self, url: str, access_token: str, space_key: str, batch_size: int = 100) -> Iterable[Document]:
         confluence = Confluence(url=url, token=access_token)
         return self.get_all_pages(confluence, space_key, batch_size)
 
@@ -359,7 +453,7 @@ class GitlabDataSource(DataSource):
     def _create_metadata(self, file_content: ProjectFile):
         return {"file_path": file_content.file_path} if file_content.file_path else {}
 
-    def _load_data(self, url: str, namespace: str, project_name: str, branch: str, private_token: str) \
+    def _download_data(self, url: str, namespace: str, project_name: str, branch: str, private_token: str) \
             -> Iterable[Document]:
         def filter_valid_files(tree):
             include_extensions = [".txt", ".md", ".rst", ".html", ".htm", ".xml", ".json", ".csv", ".tsv", ".yaml",
@@ -422,7 +516,7 @@ class UrlDataSource(DataSource):
         url = document.metadata.get("source")
         return {"url": url} if url else {}
 
-    def _load_data(self, url: str, max_depth: int, base_url: str, extractor: Callable[[str], str] = bs4_extractor) \
+    def _download_data(self, url: str, max_depth: int, base_url: str, extractor: Callable[[str], str] = bs4_extractor) \
             -> Iterable[Document]:
         '''
         :param url: scraping 하고자 하는 웹사이트의 root url
@@ -455,7 +549,7 @@ class DocumentFileDataSource(DataSource):
 
         return {"file_name": file_name} if file_name else {}
 
-    def _load_data(self, doc_file_path: str) -> list[str]:
+    def _download_data(self, doc_file_path: str) -> list[str]:
         loader = UnstructuredFileLoader(file_path=doc_file_path, mode="single")
         docs = loader.lazy_load()
 
@@ -486,8 +580,8 @@ class JiraDataSource(DataSource):
 
         return metadata if metadata else {}
 
-    def _load_data(self, url: str, project_key: str, access_token: str, start: int = 0, limit: int = 1000,
-                   call_interval: float = 0.05) -> Iterable[Document]:
+    def _download_data(self, url: str, project_key: str, access_token: str, start: int = 0, limit: int = 1000,
+                       call_interval: float = 0.25) -> Iterable[Document]:
         jira = Jira(url=url, token=access_token)
         issue_keys = jira.get_project_issuekey_all(project_key, start=start, limit=limit)
 
@@ -555,7 +649,7 @@ class GitlabDiscussionDataSource(DataSource):
 
         return texts
 
-    def _load_data(self, url: str, namespace: str, project_name: str, private_token: str):
+    def _download_data(self, url: str, namespace: str, project_name: str, private_token: str):
         gl = gitlab.Gitlab(url=url, private_token=private_token)
         project = gl.projects.get(f"{namespace}/{project_name}")
         merge_requests = list(project.mergerequests.list(all=True))
@@ -601,14 +695,24 @@ class GitlabDiscussionDataSource(DataSource):
 
         return discussion_texts
 
+    def load_preview_data(self, url: str, namespace: str, project_name: str, private_token: str):
+        discussion_texts: Iterable[Document] = self._download_data(url, namespace, project_name, private_token)
 
-def create_data_source(data_source_name: str, created_by: str, description: str, data_source_type: str) \
+        first_element = next(iter(discussion_texts))
+        if first_element:
+            return truncate_content(first_element.content, self.PREVIEW_DATA_MAX_LENGTH)
+
+
+def create_data_source(data_source_name: str, created_by: str, description: str, data_source_type: str,
+                       opensearch_hosts: str, opensearch_auth: tuple[str, str]) \
         -> DataSource:
     datasource_data = {
         "id": create_data_source_id(created_by, data_source_name),
         "name": data_source_name,
         "description": description,
-        "data_source_type": data_source_type
+        "data_source_type": data_source_type,
+        "opensearch_hosts": opensearch_hosts,
+        "opensearch_auth": opensearch_auth
     }
 
     if data_source_type == DataSourceType.TEXT.value:

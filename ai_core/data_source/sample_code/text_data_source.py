@@ -1,8 +1,7 @@
 import asyncio
-from datetime import datetime, time
-from typing import Iterable
+from datetime import datetime
+from typing import AsyncIterable
 
-from ai_core import CHROMA_DB_DEFAULT_PERSIST_DIR
 from ai_core.data_source.base import create_data_source
 from ai_core.data_source.model.document import Document
 from ai_core.data_source.splitter import create_splitter, SplitterType
@@ -12,6 +11,9 @@ from ai_core.llm_api_provider import LlmApiProvider
 
 
 async def main():
+    opensearch_hosts = 'localhost:9200'
+    opensearch_auth = ('admin', 'Skapfhd3122!@') # For testing only. Don't store credentials in code.
+
     # 1. 데이터 로딩
     raw_text: str = \
         ("Apache Flink is an open-source stream-processing framework developed by the Apache Software Foundation. "
@@ -27,7 +29,9 @@ async def main():
         data_source_name="apache_flink_text",
         created_by="your_nickname",
         description="test description",
-        data_source_type="text")
+        data_source_type="text",
+        opensearch_hosts=opensearch_hosts,
+        opensearch_auth=opensearch_auth)
 
     llm_api_provider = LlmApiProvider.SMART_BEE.value
     embedding_model_name = "text-embedding-3-large"
@@ -39,8 +43,7 @@ async def main():
         llm_api_provider=llm_api_provider,
         llm_api_key="ba3954fe-9cbb-4599-966b-20b04b5d3441",
         llm_api_url="https://aihub-api.sktelecom.com/aihub/v1/sandbox",
-        llm_embedding_model_name=embedding_model_name,
-        persist_directory=CHROMA_DB_DEFAULT_PERSIST_DIR)
+        llm_embedding_model_name=embedding_model_name)
 
     preview_start = datetime.now()
     preview_data = data_source.load_preview_data(raw_text=[raw_text])
@@ -48,21 +51,14 @@ async def main():
     print(preview_data)
     print("Preview data loaded in ", str(preview_end - preview_start))
 
-    # 4. 데이터를 텍스트 파일로 저장
-    save_task = asyncio.create_task(data_source.save_data(raw_text=[raw_text]))
+    # 4. 데이터를 Opensearch에 저장
+    data_source.save_data(raw_text=[raw_text])
     print("Data saving task started")
 
-    def save_callback(future):
-        print("Data saved successfully")
-
-    save_task.add_done_callback(save_callback)
-
-    await save_task
-
-    # 5. 데이터 임베딩 및 ChromaDB에 추가
+    # 5. 데이터 임베딩 및 Vectorstore에 추가
     data = data_source.read_data()
     splitter = create_splitter(SplitterType.RecursiveCharacterTextSplitter, chunk_size=1000, chunk_overlap=200)
-    splitted_documents: Iterable[Document] = split_texts(data, splitter)
+    splitted_documents: AsyncIterable[Document] = split_texts(data, splitter)
 
     def embed_callback(future):
         try:
@@ -76,7 +72,7 @@ async def main():
             print("Embedding task failed: ", e)
             print("Update embedding state to failed")
 
-    embed_task = asyncio.create_task(collection.embed_documents_and_overwrite_to_chromadb(documents=splitted_documents))
+    embed_task = asyncio.create_task(collection.embed_documents_and_overwrite_to_vectorstore(documents=splitted_documents))
     embed_task.add_done_callback(embed_callback)
     print("Embedding task started")
 
@@ -84,7 +80,7 @@ async def main():
 
     # 6. 유사도 검색
     query = "What is Apache Flink?"
-    query_results = collection.similarity_search(query=query, k=4)
+    query_results = collection.similarity_search(query=query, search_type=Similarity(k=4))
     for result in query_results:
         print(result.page_content)
 
@@ -98,6 +94,10 @@ async def main():
         search_type=Similarity(k=5),
         name="Very Important tool name",
         description="Very Important Description")
+
+    # Unclosed client session warning 제거
+    await collection.vectorstore.async_client.close()
+    await data_source.async_opensearch_client.close()
 
 
 asyncio.run(main())

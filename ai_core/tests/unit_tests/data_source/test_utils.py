@@ -1,6 +1,6 @@
 import pytest
 
-from ai_core.data_source.utils import create_data_source_id, create_collection_name, truncate_name
+from ai_core.data_source.utils.utils import create_data_source_id, create_collection_name
 from ai_core.data_source.embedding import EmbeddingModel, AzureEmbeddingModelFactory
 
 
@@ -26,15 +26,6 @@ def test_none_data_source_name():
 
     with pytest.raises(ValueError) as e:
         create_data_source_id(created_by, data_source_name)
-
-
-def test_truncate_string():
-    embedding_model_name = "text-embedding-3-large"
-    truncated = truncate_name(embedding_model_name, 13)
-
-    print(truncated)
-
-    assert truncated == "text-embe9d75"
 
 
 def test_create_collection_name():

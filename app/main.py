@@ -24,6 +24,8 @@ from .endpoint.tags import router as tags_router
 from .endpoint.prompt import router as prompt_router
 from .endpoint.tools import router as tool_router
 from .endpoint.datasource import router as datasource_router
+from .endpoint.dashboard import router as dashbord_router
+from .endpoint import realtime_updates
 # from .endpoint.conversationPrompt import router as conversationPrompt_router
 from .database import SessionLocal, engine, Base, User, Conversation, Message
 from app import models, database
@@ -50,6 +52,10 @@ app = FastAPI(docs_url=None)
 # Serve static files from the 'static' directory within the 'app' folder
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
+logging.basicConfig(
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
 
 logger = None
 
@@ -155,7 +161,7 @@ async def startup_event():
     event.listen(engine, "after_execute", after_execute)
     event.listen(engine, "before_cursor_execute", before_cursor_execute)
 
-    
+
     database.create_sync_connection_pool()
     await database.create_async_connection_pool()
     
@@ -305,8 +311,8 @@ async def add_session_to_request(request: Request, call_next):
         response_message.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
         response_message.headers["Access-Control-Allow-Headers"] = "Content-Type"
 
-        logging.error(f"Unhandled error: {str(e)}")
-        logging.error(trace_str)
+        logger.error(f"Unhandled error: {str(e)}")
+        logger.error(trace_str)
         return response_message
 
 # app.include_router(sample_router, prefix="/api/sample")
@@ -326,6 +332,8 @@ app.include_router(tags_router, prefix="/api/tags", tags=["Tags"])
 app.include_router(prompt_router, prefix="/api" ,tags=["Prompts"])
 app.include_router(tool_router, prefix="/api" ,tags=["Tools"])
 app.include_router(datasource_router, prefix="/api/datasource" ,tags=["Data Source"])
+app.include_router(dashbord_router, prefix="/api/dashboard" ,tags=["Dashboard"])
+app.include_router(realtime_updates.router)
 
 # app.include_router(docs_router,tags=["Docs"])
 # app.include_router(conversationPrompt_router, prefix="/api")

@@ -3,7 +3,7 @@ from datetime import datetime
 from enum import Enum
 import logging
 import os
-from typing import Annotated, Iterable, List, Optional
+from typing import Annotated, AsyncIterable, Iterable, List, Optional
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile ,status,BackgroundTasks
 from fastapi.responses import FileResponse
 from pydantic import Field
@@ -23,11 +23,16 @@ from app.database import SessionLocal , get_db
 import aiofiles
 import pydash
 from .realtime_updates import broadcast_update
+from opensearchpy import OpenSearch
+import app.config
 
 logger = logging.getLogger('sqlalchemy.engine')
 router = APIRouter()
 COLLECTION_DIR = os.path.join(os.getenv("DAISY_ROOT_FOLDER") ,'datasource/collection')
 CHROMA_DB_DIR = os.path.join(COLLECTION_DIR ,'daisy_chromadb')
+
+opensearch_hosts = os.getenv('opensearch_hosts')
+opensearch_auth = (os.getenv('opensearch_username'), os.getenv('opensearch_password'))
 
 # Function to calculate total size of files in a directory
 def get_total_file_size(directory):
@@ -50,6 +55,15 @@ def construct_file_save_path(datasource_id, file_name: str) -> str:
     # file_save_path = os.path.join(root_path, 'datasource/data', str(datasource_id) + '_' + file_name)
     file_save_path = os.path.join(COLLECTION_DIR,str(datasource_id) + '_' + file_name)
     return file_save_path
+
+# Define a wrapper to handle asyncio.to_thread and callback
+async def run_with_callback(sync_func, callback_func, *args, **kwargs):
+    result = await asyncio.to_thread(sync_func, *args, **kwargs)
+    callback_func(result)
+
+async def async_wrap(generator):
+    async for item in generator:
+        yield item
 
 @router.post(
     "/",
@@ -115,8 +129,9 @@ async def create_datasource(
     tag_ids: Optional[str] = Form(None,description="Comma-separated list of tag IDs"),
     # payload: models.DatasourceCreate ,
     file: Annotated[UploadFile ,File(description="File path for document or PDF")] = None,  # File upload
-    db: Session = Depends(database.get_db_async),
+    db: Session = Depends(database.get_db),
     session_data: SessionData = Depends(verifier)
+   
 ):
     
     validate_datasource(datasource_type, namespace, project_name, branch, space_key, project_key, start, limit,token, raw_text, url, base_url, max_depth)
@@ -204,94 +219,101 @@ async def create_datasource(
         data_source_name=db_datasource.name,
         created_by=db_datasource.create_user_info.nickname,
         description=db_datasource.description,
-        data_source_type=db_datasource.datasource_type
+        data_source_type=db_datasource.datasource_type,
+        opensearch_hosts=opensearch_hosts,
+        opensearch_auth=opensearch_auth
     )
 
-    
-    data_size = 0
-    if datasource_type == DataSourceType.TEXT:
-        data_size = len(db_datasource.raw_text.encode('utf-8'))
-        save_task = asyncio.create_task(data_source.save_data(raw_text=[db_datasource.raw_text]))
+    async def execute_save_data():
         
-    if datasource_type == DataSourceType.PDF_FILE:
-        pdf_file_path = db_datasource.file_path
-        if os.path.exists(pdf_file_path):
-            data_size = os.path.getsize(pdf_file_path)  # Get PDF file size in bytes
-        save_task = asyncio.create_task(data_source.save_data(pdf_file_path=db_datasource.file_path))
-        
-        
-    if datasource_type == DataSourceType.DOC_FILE:
-        doc_file_path = db_datasource.file_path
-        if os.path.exists(doc_file_path):
-            data_size = os.path.getsize(doc_file_path)  # Get DOC file size in bytesn bytes
-        save_task = asyncio.create_task(data_source.save_data(doc_file_path=db_datasource.file_path))
-        
-    if datasource_type == DataSourceType.CONFLUENCE:
-        if utils.is_empty(session_data.token_confluence):
-            raise HTTPException(status_code=422, detail=f"Token of Confluence is required for {datasource_type.name} datasource type")
-        # if os.path.exists(data_source.data_dir_path + '/0'):
-        #     data_size = get_total_file_size(data_source.data_dir_path + '/0')
-        save_task = asyncio.create_task(data_source.save_data(url=db_datasource.url ,access_token=session_data.token_confluence,space_key=db_datasource.space_key)) 
-        
-    if datasource_type == DataSourceType.JIRA:
-        if utils.is_empty(db_datasource.token):
-            raise HTTPException(status_code=422, detail=f"Token of Jira is required for {datasource_type.name} datasource type")
-        # if os.path.exists(data_source.data_dir_path + '/0'):
-        #     data_size = get_total_file_size(data_source.data_dir_path + '/0')
-        save_task = asyncio.create_task(
-            data_source.save_data(
+        data_size = 0
+        if datasource_type == DataSourceType.TEXT:
+            data_size = len(db_datasource.raw_text.encode('utf-8'))
+            save_task = await asyncio.to_thread(data_source.save_data,raw_text=[db_datasource.raw_text])
+            
+        if datasource_type == DataSourceType.PDF_FILE:
+            pdf_file_path = db_datasource.file_path
+            if os.path.exists(pdf_file_path):
+                data_size = os.path.getsize(pdf_file_path)  # Get PDF file size in bytes
+                save_task = await asyncio.to_thread(data_source.save_data,pdf_file_path=db_datasource.file_path)
+            
+        if datasource_type == DataSourceType.DOC_FILE:
+            doc_file_path = db_datasource.file_path
+            if os.path.exists(doc_file_path):
+                data_size = os.path.getsize(doc_file_path)  # Get DOC file size in bytesn bytes
+                save_task = await asyncio.to_thread(data_source.save_data,doc_file_path=db_datasource.file_path)
+            
+        if datasource_type == DataSourceType.CONFLUENCE:
+            if utils.is_empty(session_data.token_confluence):
+                raise HTTPException(status_code=422, detail=f"Token of Confluence is required for {datasource_type.name} datasource type")
+            # if os.path.exists(data_source.data_dir_path + '/0'):
+            #     data_size = get_total_file_size(data_source.data_dir_path + '/0')
+            save_task =  await asyncio.to_thread(data_source.save_data, url=db_datasource.url ,access_token=session_data.token_confluence,space_key=db_datasource.space_key) 
+            
+        if datasource_type == DataSourceType.JIRA:
+            if utils.is_empty(db_datasource.token):
+                raise HTTPException(status_code=422, detail=f"Token of Jira is required for {datasource_type.name} datasource type")
+            # if os.path.exists(data_source.data_dir_path + '/0'):
+            #     data_size = get_total_file_size(data_source.data_dir_path + '/0')
+            save_task = await asyncio.to_thread(
+                data_source.save_data ,
                 url=db_datasource.url ,
                 access_token=db_datasource.token,
                 project_key=db_datasource.project_key,
                 start=db_datasource.start, 
                 limit=db_datasource.limit
-            )
-        ) 
-        
-    if datasource_type == DataSourceType.GITLAB:
-        if utils.is_empty(session_data.token_gitlab):
-            raise HTTPException(status_code=422, detail=f"Token of Gitlab is required for {datasource_type.name} datasource type")
-        # if os.path.exists(data_source.data_dir_path + '/0'):
-        #     data_size = get_total_file_size(data_source.data_dir_path + '/0')
-        save_task = asyncio.create_task(data_source.save_data(
-            url=db_datasource.url ,
-            namespace=db_datasource.namespace, 
-            project_name = db_datasource.project_name,
-            branch=db_datasource.branch,
-            private_token=session_data.token_gitlab)) 
-        
-    if datasource_type == DataSourceType.GITLAB_DISCUSSION:
-        if utils.is_empty(session_data.token_gitlab):
-            raise HTTPException(status_code=422, detail=f"Token of Gitlab is required for {datasource_type.name} datasource type")
-        # if os.path.exists(data_source.data_dir_path + '/0'):
-        #     data_size = get_total_file_size(data_source.data_dir_path + '/0')
-        save_task = asyncio.create_task(data_source.save_data(
-            url=db_datasource.url ,
-            namespace=db_datasource.namespace, 
-            project_name = db_datasource.project_name,
-            private_token=session_data.token_gitlab)) 
-        
-    if datasource_type == DataSourceType.URL:
-        # if os.path.exists(data_source.data_dir_path + '/0'):
-        #     data_size = get_total_file_size(data_source.data_dir_path + '/0')
-        save_task = asyncio.create_task(
-            data_source.save_data(
+            ) 
+            
+        if datasource_type == DataSourceType.GITLAB:
+            if utils.is_empty(session_data.token_gitlab):
+                raise HTTPException(status_code=422, detail=f"Token of Gitlab is required for {datasource_type.name} datasource type")
+            # if os.path.exists(data_source.data_dir_path + '/0'):
+            #     data_size = get_total_file_size(data_source.data_dir_path + '/0')
+            save_task = await asyncio.to_thread(data_source.save_data,
+                url=db_datasource.url ,
+                namespace=db_datasource.namespace, 
+                project_name = db_datasource.project_name,
+                branch=db_datasource.branch,
+                private_token=session_data.token_gitlab) 
+            
+        if datasource_type == DataSourceType.GITLAB_DISCUSSION:
+            if utils.is_empty(session_data.token_gitlab):
+                raise HTTPException(status_code=422, detail=f"Token of Gitlab is required for {datasource_type.name} datasource type")
+            # if os.path.exists(data_source.data_dir_path + '/0'):
+            #     data_size = get_total_file_size(data_source.data_dir_path + '/0')
+            save_task = await asyncio.to_thread(
+                data_source.save_data,
+                url=db_datasource.url ,
+                namespace=db_datasource.namespace, 
+                project_name = db_datasource.project_name,
+                private_token=session_data.token_gitlab
+            ) 
+            
+        if datasource_type == DataSourceType.URL:
+            # if os.path.exists(data_source.data_dir_path + '/0'):
+            #     data_size = get_total_file_size(data_source.data_dir_path + '/0')
+            save_task = await asyncio.to_thread(
+                data_source.save_data,
                 url=db_datasource.url ,
                 base_url=db_datasource.base_url,
                 max_depth=db_datasource.max_depth 
             )
-        ) 
+        return save_task 
+
 
         
     logger.info("Data saving task started")  
     def save_callback(future):
+        db_callback = database.SessionLocal()
         try:
+            db_datasource = db_callback.query(database.DataSource).filter(database.DataSource.datasource_id == datasource_id).first()
             if future.exception():
-                logger.info("Datasource task failed: ", future.exception())
+                logging.error(f"Datasource task failed: {future.exception()}")
                 db_datasource.status = database.DatasourceDownloadStatus.error
             else:
                 # embeded, total = future.result()
                 # logger.info("Embedding task completed. Number of chunks embedded / Total: ", str(embeded), " / ", str(total))
+                result =  future.result()
                 db_datasource.downloaded_at = datetime.now(database.KST)
                 db_datasource.updated_at = datetime.now(database.KST)
                 db_datasource.status = database.DatasourceDownloadStatus.downloaded
@@ -310,14 +332,14 @@ async def create_datasource(
             logger.error(f"Save task failed: {e}")
             
         finally:
-            db.commit()
-            db.close()  
+            db_callback.commit()
+            db_callback.close()  
         
-    if save_task:
-        save_task.add_done_callback(save_callback) 
+    # Schedule the execution and apply the callback
+    task = asyncio.create_task(execute_save_data())
+    task.add_done_callback(lambda future: save_callback(future))
     
-    
-    db.commit()
+    # db.commit()
     return db_datasource
 
 def validate_datasource(datasource_type : DataSourceType, namespace, project_name, branch, space_key, project_key, start, limit, token, raw_text, url, base_url, max_depth):
@@ -393,7 +415,7 @@ async def update_datasource(
     max_depth: Optional[int] = Form(None, description="Maximum depth for URL crawling"),
     tag_ids: Optional[str] = Form(None, description="Comma-separated list of tag IDs"),
     file: Annotated[UploadFile, File(description="File for document or PDF")] = None,  # File upload
-    db: Session = Depends(get_db),
+    db: Session = Depends(database.get_db_async),
     session_data: SessionData = Depends(verifier)
 ):
     # Fetch the existing datasource from the database
@@ -461,8 +483,8 @@ async def update_datasource(
             db_datasource.file_path = file_save_path
 
     # updates to the database
-    db.flush()
-    db.refresh(db_datasource)
+    # db.flush()
+    # db.refresh(db_datasource)
     
     
     # 데이터를 텍스트 파일로 저장
@@ -470,7 +492,9 @@ async def update_datasource(
         data_source_name=db_datasource.name,
         created_by=db_datasource.create_user_info.nickname,
         description=db_datasource.description,
-        data_source_type=db_datasource.datasource_type
+        data_source_type=db_datasource.datasource_type,
+        opensearch_hosts=opensearch_hosts,
+        opensearch_auth=opensearch_auth
     )
 
         
@@ -551,20 +575,40 @@ async def update_datasource(
         
     logger.info("Data saving task started")  
     def save_callback(future):
-        if future.exception():
-            logger.info("Datasource task failed: ", future.exception())
+        try:
+            if future.exception():
+                logger.info("Datasource task failed: ", future.exception())
+                db_datasource.status = database.DatasourceDownloadStatus.error
+            else:
+                # embeded, total = future.result()
+                # logger.info("Embedding task completed. Number of chunks embedded / Total: ", str(embeded), " / ", str(total))
+                db_datasource.downloaded_at = datetime.now(database.KST)
+                db_datasource.updated_at = datetime.now(database.KST)
+                db_datasource.status = database.DatasourceDownloadStatus.downloaded
+            
+            # update_message = {
+            #     "type": "datasource_update",
+            #     "data": utils.sqlalchemy_to_dict(db_datasource)
+            # }
+            update_message = {
+                "type": "datasource_update",
+                "data": models.Datasource.from_orm(db_datasource).dict()
+            }
+            asyncio.create_task(broadcast_update(update_message))
+        except Exception as e:
             db_datasource.status = database.DatasourceDownloadStatus.error
-        else:
-            # embeded, total = future.result()
-            # logger.info("Embedding task completed. Number of chunks embedded / Total: ", str(embeded), " / ", str(total))
-            db_datasource.downloaded_at = datetime.now(database.KST)
-            db_datasource.updated_at = datetime.now(database.KST)
-            db_datasource.status = database.DatasourceDownloadStatus.downloaded
+            logger.error(f"Save task failed: {e}")
+            
+        finally:
+            db.commit()
+            db.close()  
         
-    save_task.add_done_callback(save_callback)
-    await save_task
+    if save_task:
+        save_task.add_done_callback(save_callback) 
+    
     
 
+    db.commit()
     return db_datasource
 
 @router.post(
@@ -736,7 +780,9 @@ def preview_datasource_sub(datasource_type,info_datasource, session_data ):
         data_source_name=info_datasource.name,
         created_by=session_data.nickname,
         description=info_datasource.description,
-        data_source_type=info_datasource.datasource_type
+        data_source_type=info_datasource.datasource_type,
+        opensearch_hosts=opensearch_hosts,
+        opensearch_auth=opensearch_auth
     )   
     
     if datasource_type == DataSourceType.TEXT:
@@ -806,7 +852,9 @@ async def delete_datasource(
         data_source_name=db_datasource.name,
         created_by=db_datasource.create_user_info.nickname,
         description=db_datasource.description,
-        data_source_type=db_datasource.datasource_type
+        data_source_type=db_datasource.datasource_type,
+        opensearch_hosts=opensearch_hosts,
+        opensearch_auth=opensearch_auth
     )
     for db_embedding in db_datasource.embeddings:
         db_llm_api = db_embedding.llm_api
@@ -817,8 +865,8 @@ async def delete_datasource(
             llm_api_provider=LlmApiProvider(db_llm_api.llm_api_provider),
             llm_api_key=db_llm_api.llm_api_key,
             llm_api_url=db_llm_api.llm_api_url,
-            llm_embedding_model_name=db_embedding.embedding_model,
-            persist_directory=CHROMA_DB_DEFAULT_PERSIST_DIR)
+            llm_embedding_model_name=db_embedding.embedding_model
+        )
         
         collection.delete_collection()
     data_source.delete_data_directory()
@@ -922,7 +970,9 @@ async def create_embedding(
         data_source_name=db_datasource.name,
         created_by=db_datasource.create_user_info.nickname,
         description=db_datasource.description,
-        data_source_type=db_datasource.datasource_type
+        data_source_type=db_datasource.datasource_type,
+        opensearch_hosts=opensearch_hosts,
+        opensearch_auth=opensearch_auth
     )
     
     # 3. 데이터 소스에 컬렉션 추가
@@ -932,8 +982,7 @@ async def create_embedding(
         llm_api_provider=LlmApiProvider(db_llm_api.llm_api_provider),
         llm_api_key=db_llm_api.llm_api_key,
         llm_api_url=db_llm_api.llm_api_url,
-        llm_embedding_model_name=payload.embedding_model,
-        persist_directory=CHROMA_DB_DEFAULT_PERSIST_DIR)
+        llm_embedding_model_name=payload.embedding_model)
     
     data_size = 0
     
@@ -969,38 +1018,74 @@ async def create_embedding(
         'language'
     ]}
 
-    if 'splitter' in splitter_payload_data and not utils.is_empty(splitter_payload_data['splitter']):
-        spliter_type = SplitterType(payload.splitter)
-        # if spliter_type in [SplitterType.RecursiveCharacterTextSplitter] : 
-        if 'language' in payload_data and hasattr(Language,payload_data['language']):
-            splitter_payload_data['language'] = Language(payload_data['language'])
+    async def  execute_embedding():
+        if 'splitter' in splitter_payload_data and not utils.is_empty(splitter_payload_data['splitter']):
+            spliter_type = SplitterType(payload.splitter)
+            # if spliter_type in [SplitterType.RecursiveCharacterTextSplitter] : 
+            if 'language' in payload_data and hasattr(Language,payload_data['language']):
+                splitter_payload_data['language'] = Language(payload_data['language'])
 
-        splitter = create_splitter(spliter_type, **splitter_payload_data)
-        splitted_documents: Iterable[Document] = split_texts(data, splitter)
-        embed_task = asyncio.create_task(collection.embed_documents_and_overwrite_to_chromadb(documents=splitted_documents))
-    else:
-        embed_task = asyncio.create_task(collection.embed_documents_and_overwrite_to_chromadb(documents=data))
-        
-    def embed_callback(future):
-        if future.exception():
-            logger.info("Embedding task failed: ", future.exception())
-            logger.info("Update embedding state to failed")
+            splitter = create_splitter(spliter_type, **splitter_payload_data)
+            splitted_documents: Iterable[Document] = split_texts(documents=data, splitter=splitter)
+            # embed_task = asyncio.create_task(collection.embed_documents_and_overwrite_to_vectorstore,documents=splitted_documents)
+            embed_task = asyncio.create_task(collection.embed_documents_and_overwrite_to_vectorstore(documents=splitted_documents))
         else:
-            embeded, total = future.result()
-            logger.info("Embedding task completed. Number of chunks embedded / Total: ", str(embeded), " / ", str(total))
-            collection.last_update_succeeded_at = datetime.now(database.KST)
-            db_embedding.last_update_time = datetime.now(database.KST)
-            db_embedding.success_at = datetime.now(database.KST)
-            db_embedding.completed_at = datetime.now(database.KST)
-            db_embedding.status="updated"
+            # embed_task = asyncio.create_task(collection.embed_documents_and_overwrite_to_vectorstore,documents=data)
+            embed_task = asyncio.create_task(collection.embed_documents_and_overwrite_to_vectorstore(documents=data))
+        
+        
+        logging.info(f"Data embedding task started : {collection_name}")   
+        if embed_task :        
+            embed_task.add_done_callback(embed_callback)
+        # return embed_task
+          
+    
+    def embed_callback(future):
+        db_callback = database.SessionLocal()
+        try:
+            query_embedding = db_callback.query(database.Embedding)
+            query_embedding = query_embedding.filter(database.Embedding.datasource_id == payload.datasource_id)
+            query_embedding = query_embedding.filter(database.Embedding.embedding_id == collection_name)
+            db_embedding = query_embedding.first()
+            if future.exception():
+                logging.info("Embedding task failed: ", future.exception())
+                db_embedding.status = database.EmbeddingStatus.failed
+            else:
+                embeded, total = future.result()
+                logging.info(f"Embedding task completed. Number of chunks embedded {str(embeded)} / Total {str(total)}: ")
+                # logger.info("Embedding task completed. Number of chunks embedded / Total: ", str(embeded), " / ", str(total))
+                collection.last_update_succeeded_at = datetime.now(database.KST)
+                db_embedding.last_update_time = datetime.now(database.KST)
+                db_embedding.success_at = datetime.now(database.KST)
+                db_embedding.completed_at = datetime.now(database.KST)
+                db_embedding.status=database.EmbeddingStatus.updated
+                
+            update_message = {
+                "type": "embedding_update",
+                "data": models.Embedding.from_orm(db_embedding).dict()
+            }
+            asyncio.create_task(broadcast_update(update_message))
+        except Exception as e:
+            db_embedding.status = database.EmbeddingStatus.failed
+            logger.error(f"Save task failed: {e}")
             
-    embed_task.add_done_callback(embed_callback)
-
-    await embed_task
-    # End embedding
-
+        finally:
+            db_callback.commit()
+            db_callback.close()  
+    
+    # db.flush()
+    # db.refresh(db_embedding)
+    
+    # # Schedule the execution and apply the callback
+    # embed_task = asyncio.create_task(execute_embedding())
+    # embed_task.add_done_callback(lambda future: embed_callback(future))
+    
+    # embed_task = execute_embedding()
+    
+    asyncio.create_task(execute_embedding())
+     
     db.flush()
-    db.refresh(db_embedding)
+    db.refresh(db_embedding)   
     return db_embedding
 
 @router.put(
@@ -1114,7 +1199,9 @@ async def update_embedding(
         data_source_name=db_datasource.name,
         created_by=db_datasource.create_user_info.nickname,
         description=db_datasource.description,
-        data_source_type=db_datasource.datasource_type
+        data_source_type=db_datasource.datasource_type,
+        opensearch_hosts=opensearch_hosts,
+        opensearch_auth=opensearch_auth
     )
     
     # 3. 데이터 소스에 컬렉션 추가
@@ -1124,8 +1211,7 @@ async def update_embedding(
         llm_api_provider=LlmApiProvider(db_llm_api.llm_api_provider),
         llm_api_key=db_llm_api.llm_api_key,
         llm_api_url=db_llm_api.llm_api_url,
-        llm_embedding_model_name=payload.embedding_model,
-        persist_directory=CHROMA_DB_DEFAULT_PERSIST_DIR
+        llm_embedding_model_name=payload.embedding_model
     )
     collection = data_source.collections[collection_name]
     
@@ -1211,7 +1297,7 @@ async def preview_embedding(
         session_data=session_data
     )
     
-    def read_data(preview_data) -> Iterable[Document]:
+    async def read_data(preview_data) -> AsyncIterable[Document]:
         # 텍스트 파일로 저장된 데이터를 불러옵니다.
         yield Document(content=preview_data, metadata="")
     
@@ -1230,12 +1316,10 @@ async def preview_embedding(
         splitter_payload_data['language'] = Language(payload_data['language'])
 
     splitter = create_splitter(spliter_type, **splitter_payload_data)
-    splitted_documents: Iterable[Document] = split_texts(preview_data_i, splitter)
-   
-   
+    splitted_documents = split_texts(preview_data_i, splitter)
+        
     result: List[dict] = []
-    for document in splitted_documents:
-        # Convert each Document object to a dictionary with 'content' and 'metadata'
+    async for document in splitted_documents:
         result.append({
             "content": document.content,
             "metadata": document.metadata
@@ -1273,7 +1357,9 @@ async def similarity_search(
         data_source_name=db_embedding.datasource.name,
         created_by=db_embedding.datasource.create_user_info.nickname,
         description=db_embedding.datasource.description,
-        data_source_type=db_embedding.datasource.datasource_type
+        data_source_type=db_embedding.datasource.datasource_type,
+        opensearch_hosts=opensearch_hosts,
+        opensearch_auth=opensearch_auth
     )
     # 3. 데이터 소스에 컬렉션 추가
 
@@ -1283,8 +1369,7 @@ async def similarity_search(
         llm_api_provider=LlmApiProvider(db_embedding.llm_api.llm_api_provider),
         llm_api_key=db_embedding.llm_api.llm_api_key,
         llm_api_url=db_embedding.llm_api.llm_api_url,
-        llm_embedding_model_name=db_embedding.embedding_model,
-        persist_directory=CHROMA_DB_DEFAULT_PERSIST_DIR)
+        llm_embedding_model_name=db_embedding.embedding_model)
     
     query_results = collection.similarity_search(query=payload.query, k=4)
     return query_results
@@ -1465,7 +1550,9 @@ async def delete_embedding(
         data_source_name=db_datasource.name,
         created_by=db_datasource.create_user_info.nickname,
         description=db_datasource.description,
-        data_source_type=db_datasource.datasource_type
+        data_source_type=db_datasource.datasource_type,
+        opensearch_hosts=opensearch_hosts,
+        opensearch_auth=opensearch_auth
     )
     
     # 3. 데이터 소스에 컬렉션 추가
@@ -1475,10 +1562,10 @@ async def delete_embedding(
         llm_api_provider=LlmApiProvider(db_llm_api.llm_api_provider),
         llm_api_key=db_llm_api.llm_api_key,
         llm_api_url=db_llm_api.llm_api_url,
-        llm_embedding_model_name=db_embedding.embedding_model,
-        persist_directory=CHROMA_DB_DEFAULT_PERSIST_DIR)    
+        llm_embedding_model_name=db_embedding.embedding_model)    
     
-    collection.delete_collection()
+    # collection.delete_collection()
+    embed_delete = asyncio.create_task(collection.adelete_collection())
     # Extract embedding data before deletion
     embedding_data = models.Embedding.from_orm(db_embedding)
 

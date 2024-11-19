@@ -1,6 +1,7 @@
 import asyncio
+import traceback
 import json
-from fastapi import Body, FastAPI, Depends, HTTPException, Header, Request
+from fastapi import Body, FastAPI, Depends, HTTPException, Header, Request , status
 from fastapi.responses import PlainTextResponse, StreamingResponse
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
@@ -11,6 +12,8 @@ from ai_core.data_source.utils.utils import create_collection_name
 from ai_core.llm.base import create_chat_model
 from ai_core.llm_api_provider import LlmApiProvider
 from ai_core.tool.base import load_tool
+from app.endpoint.messages import get_sum_token
+from app.endpoint.prompt import replace_variables
 from app.endpoint.tools import construct_file_save_path, convert_db_tool_to_pydantic
 from app.models import Message , MessageCreate
 from app.database import SessionLocal, get_db , KST
@@ -25,10 +28,14 @@ import pydash
 from typing import Optional ,List,ForwardRef
 from app.utils import utils
 import logging
+import app.config
 
 logger = logging.getLogger('sqlalchemy.engine')
 
 router = APIRouter()
+
+opensearch_hosts = os.getenv('opensearch_hosts')
+opensearch_auth = (os.getenv('opensearch_username'), os.getenv('opensearch_password'))
 
 
 # stream 같은것을 사용할 때 
@@ -62,11 +69,10 @@ async def ask_system_message(
         raise HTTPException(status_code=404, detail="User of 'SYSTEM' is not found")
     
     # check llm api
-    db_llm_api = db.query(database.LlmApi).filter(
-        database.LlmApi.llm_api_provider=='smart_bee'
-        and database.LlmApi.llm_model=='gpt-4o'
-        and database.LlmApi.llm_api_type=='public'
-    ).first()
+    llm_api_query = db.query(database.LlmApi).filter(database.LlmApi.llm_api_provider=='smart_bee')
+    llm_api_query = llm_api_query.filter( database.LlmApi.llm_model=='gpt-4o')
+    llm_api_query = llm_api_query.filter( database.LlmApi.llm_api_type=='public')
+    db_llm_api = llm_api_query.first()
     if db_llm_api is None:
         raise HTTPException(status_code=404, detail="llm api with smart_bee is not found")
     
@@ -79,7 +85,7 @@ async def ask_system_message(
     db_conversation.conversation_title = "conversation_system_" + datetime.now(KST).strftime("%Y%m%d_%H%M%S")
     db_conversation.conversation_type = 'public'
     db_conversation.llm_api_id = db_llm_api.llm_api_id
-    db_conversation.llm_model = db_llm_api.llm_model.split('/')[-1]
+    db_conversation.llm_model = db_llm_api.llm_model.split(',')[-1]
     db_conversation.temperature = 0
     db_conversation.max_tokens = 4096
     db_conversation.component_configuration = 'component'  # agent?
@@ -99,29 +105,6 @@ async def ask_system_message(
         async_conn_pool=database.async_conn_pool
     )
 
-
-    # # tool 추가 공개된 tool 을 넣는다.
-    # logger.info(f"tool 추가")
-    # tools_public = db.query(database.Tool).filter(database.Tool.visibility=='public').all()
-
-    
-
-    # for db_tool in tools_public:
-    #     pydantic_tool = convert_db_tool_to_pydantic(db_tool)
-    #     file_save_path = construct_file_save_path(pydantic_tool)
-    #     try: 
-    #         db_conversation.tools.append(db_tool)
-    #         conversation_instance.add_tool(db_tool.name,db_owner.nickname,file_save_path)
-    #     except Exception as e:
-    #         raise HTTPException(
-    #             status_code=500, 
-    #             detail=f"""
-    #             tool id : {db_tool.tool_id}
-    #             tool name : {db_tool.name}
-    #             file path : {file_save_path}
-    #             error message: toolName {e}
-    #             """
-    #         )
     
     # agent 추가
     agent_public = db.query(database.Agent).filter(database.Agent.visibility=='public').all()
@@ -157,7 +140,9 @@ async def ask_system_message(
                 data_source_name=db_agent_datasource.name,
                 created_by=db_agent_datasource.create_user_info.nickname,
                 description=db_agent_datasource.description,
-                data_source_type=db_agent_datasource.datasource_type
+                data_source_type=db_agent_datasource.datasource_type,
+                opensearch_hosts=opensearch_hosts,
+                opensearch_auth=opensearch_auth
             )
             for db_agent_embedding in db_agent_datasource.embeddings:
                 # 데이터 소스에 컬렉션 추가
@@ -168,8 +153,7 @@ async def ask_system_message(
                     llm_api_key=db_agent_embedding.llm_api.llm_api_key,
                     llm_api_url=db_agent_embedding.llm_api.llm_api_url,
                     llm_embedding_model_name=db_agent_embedding.embedding_model,
-                    persist_directory=CHROMA_DB_DEFAULT_PERSIST_DIR
-                    ,last_update_succeeded_at = db_agent_embedding.success_at
+                    last_update_succeeded_at=db_agent_embedding.success_at
                 )
             latest_collection_agent = agent_data_source.get_latest_collection()
             if latest_collection_agent is not None:    
@@ -262,6 +246,7 @@ async def alert_system_message(
     content_type: str = Header(...),
     db: Session = Depends(get_db)
 ):
+    logger.info(f"Start /api/alert/{sender}")
     # Handle both 'text/plain' and 'application/json' content types
     if content_type == 'text/plain':
         message = await request.body()
@@ -296,11 +281,10 @@ async def alert_system_message(
         
     
     # check llm api
-    db_llm_api = db.query(database.LlmApi).filter(
-        database.LlmApi.llm_api_provider=='smart_bee'
-        and database.LlmApi.llm_model=='gpt-4o'
-        and database.LlmApi.llm_api_type=='public'
-    ).first()
+    llm_api_query = db.query(database.LlmApi).filter(database.LlmApi.llm_api_provider=='smart_bee')
+    llm_api_query = llm_api_query.filter( database.LlmApi.llm_model=='gpt-4o')
+    llm_api_query = llm_api_query.filter( database.LlmApi.llm_api_type=='public')
+    db_llm_api = llm_api_query.first()
     if db_llm_api is None:
         raise HTTPException(status_code=404, detail="llm api with smart_bee is not found")
     
@@ -333,29 +317,6 @@ async def alert_system_message(
         async_conn_pool=database.async_conn_pool
     )
 
-
-    # # tool 추가 공개된 tool 을 넣는다.
-    # logger.info(f"tool 추가")
-    # tools_public = db.query(database.Tool).filter(database.Tool.visibility=='public').all()
-
-    
-
-    # for db_tool in tools_public:
-    #     pydantic_tool = convert_db_tool_to_pydantic(db_tool)
-    #     file_save_path = construct_file_save_path(pydantic_tool)
-    #     try: 
-    #         db_conversation.tools.append(db_tool)
-    #         conversation_instance.add_tool(db_tool.name,db_owner.nickname,file_save_path)
-    #     except Exception as e:
-    #         raise HTTPException(
-    #             status_code=500, 
-    #             detail=f"""
-    #             tool id : {db_tool.tool_id}
-    #             tool name : {db_tool.name}
-    #             file path : {file_save_path}
-    #             error message: toolName {e}
-    #             """
-    #         )
     
     # agent 추가
     agent_public = db.query(database.Agent).filter(database.Agent.visibility=='public').all()
@@ -371,6 +332,19 @@ async def alert_system_message(
         )
 
         # prompt. please complete below area
+        prompt_messages_list = []
+        agent_variables = set()
+        for db_agent_variable in db_agent.variables:
+            if db_agent_variable.variable_name not in agent_variables:
+                agent_variables.add((db_agent_variable.variable_name,db_agent_variable.variable_value))
+                
+        
+        agent_variables_dict =  dict(agent_variables)   
+        for db_agent_prompt in db_agent.prompts:
+            for db_agent_prompt_message in db_agent_prompt.promptMessage:
+                agent_prompt_message = replace_variables(db_agent_prompt_message.message ,agent_variables_dict)
+                agent_prompt = (db_agent_prompt_message.message_type,agent_prompt_message)
+                prompt_messages_list.append(agent_prompt)
 
         # tool
         agent_tools = []
@@ -391,7 +365,9 @@ async def alert_system_message(
                 data_source_name=db_agent_datasource.name,
                 created_by=db_agent_datasource.create_user_info.nickname,
                 description=db_agent_datasource.description,
-                data_source_type=db_agent_datasource.datasource_type
+                data_source_type=db_agent_datasource.datasource_type,
+                opensearch_hosts=opensearch_hosts,
+                opensearch_auth=opensearch_auth
             )
             for db_agent_embedding in db_agent_datasource.embeddings:
                 # 데이터 소스에 컬렉션 추가
@@ -402,8 +378,7 @@ async def alert_system_message(
                     llm_api_key=db_agent_embedding.llm_api.llm_api_key,
                     llm_api_url=db_agent_embedding.llm_api.llm_api_url,
                     llm_embedding_model_name=db_agent_embedding.embedding_model,
-                    persist_directory=CHROMA_DB_DEFAULT_PERSIST_DIR
-                    ,last_update_succeeded_at = db_agent_embedding.success_at
+                    last_update_succeeded_at=db_agent_embedding.success_at
                 )
             latest_collection_agent = agent_data_source.get_latest_collection()
             if latest_collection_agent is not None:    
@@ -418,7 +393,8 @@ async def alert_system_message(
             name=db_agent.name,
             description=db_agent.description,
             chat_model=chat_model,
-            tools=agent_tools
+            tools=agent_tools,
+            prompt_messages=prompt_messages_list
         )
        
     # 내부함수를 직접 쓴다.
@@ -438,39 +414,87 @@ async def alert_system_message(
     return_response.append(db_message_human)
     messages = []
 
+    try:    
+        await conversation_instance.create_agent(debug=True)
+        # conversation_instance.clear(message.conversation_id)
+        async for message_ai in conversation_instance.invoke(conversation_id, message):
+            messages.append(message_ai)
+
+
+        for message_ai in messages:
+            if isinstance(message_ai.message, list):
+                # If message_ai.message is a list, join the text attributes
+                joined_texts = "".join([msg['text'] for msg in message_ai.message if 'text' in msg])
+            elif isinstance(message_ai.message, str):
+                # If message_ai.message is already a string, use it directly
+                joined_texts = message_ai.message
+            else:
+                # Handle other unexpected types if necessary
+                joined_texts = message_ai.message
+
+            tokens_usage = 0
+            if hasattr(message_ai,'tokens_usage') :
+                if message_ai.tokens_usage is not None:
+                    tokens_usage = message_ai.tokens_usage.total_tokens
+            
+            db_message_ai = database.Message(
+                conversation_id = db_conversation.conversation_id,
+                message_type = message_ai.role.value,
+                # message_type = message_ai.raw_message.type,
+                message = joined_texts,
+                input_token = get_sum_token([message_ai],'input_tokens'),
+                output_token =  get_sum_token([message_ai],'output_tokens'),
+                total_token = get_sum_token([message_ai],'total_tokens'),
+                input_path = 'system'
+                # 아직 사용안함.
+                # tokens_usage = tokens_usage
+            )
+            db.add(db_message_ai)
+            return_response.append(db_message_ai)
+
+        if len(return_response) > 1 :
+            db.flush()
+            db_conversation.last_conversation_time = datetime.now(KST)  # Set current datetime
+            db_conversation.last_message_id = return_response[-1].message_id
+            
+            conversation_title_new = await conversation_instance.generate_title(conversation_id=conversation_id)  
+            db_conversation.conversation_title = conversation_title_new
+            
+            # used tokend
+            db_conversation.used_tokens = (db_conversation.used_tokens or 0) + get_sum_token(messages, 'total_tokens')
+            # input_token
+            db_conversation.input_token = (db_conversation.input_token or 0) + get_sum_token(messages, 'input_tokens')
+            # output token
+            db_conversation.output_token = (db_conversation.output_token or 0) + get_sum_token(messages, 'output_tokens')
         
-    await conversation_instance.create_agent(debug=True)
-    # conversation_instance.clear(message.conversation_id)
-    async for message_ai in conversation_instance.invoke(conversation_id, message):
-        messages.append(message_ai)
+    except Exception as e:
+            status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
+            if hasattr(e,'status_code') and e.status_code :
+                status_code = e.status_code
 
+            detail = f"Unhandled error {str(e)}"
+            if hasattr(e, 'body') and e.body: 
+                # Check if e.body is a dictionary
+                if isinstance(e.body, dict):
+                    detail = e.body
+                    if 'body' in e.body:
+                        detail = e.body['body']
+                else:
+                    # Handle the case where e.body is not a dictionary, if needed
+                    detail = str(e.body)
 
-    for message_ai in messages:
-        if isinstance(message_ai.message, list):
-            # If message_ai.message is a list, join the text attributes
-            joined_texts = "".join([msg['text'] for msg in message_ai.message if 'text' in msg])
-        elif isinstance(message_ai.message, str):
-            # If message_ai.message is already a string, use it directly
-            joined_texts = message_ai.message
-        else:
-            # Handle other unexpected types if necessary
-            joined_texts = message_ai.message
+            trace_str = traceback.format_exc()
+            
+            
+            error_message = {
+                "error_code" : status_code,                
+                "detail": detail,
+                "traceback": trace_str.split("\n")
+            }
+            logging.info(f"Error When message by system alert/{sender} : {e}")
+            logging.info(f"Detail Error: {error_message}")
+            raise HTTPException(status_code=status_code, detail=f"{error_message}")
 
-        db_message_ai = database.Message(
-            conversation_id = db_conversation.conversation_id,
-            message_type = message_ai.role.value,
-            # message_type = message_ai.raw_message.type,
-            message = joined_texts,
-            input_path = 'system'
-        )
-        db.add(db_message_ai)
-        return_response.append(db_message_ai)
-
-
-    if len(return_response) > 1 :
-        db.flush()
-        db_conversation.last_conversation_time = datetime.now(KST)  # Set current datetime
-        db_conversation.last_message_id = return_response[-1].message_id
         
     return return_response
 

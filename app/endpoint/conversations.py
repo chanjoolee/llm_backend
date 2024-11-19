@@ -117,7 +117,8 @@ def create_conversation(
                         )
                         db.add(db_variable)
                         existing_variables.add((variable.variable_name,variable.value))
-                    
+                        
+                
                 variables_dict = dict(existing_variables)
                 # message add
                 for db_prompt_message in db_prompt.promptMessage:
@@ -941,7 +942,7 @@ def update_conversation(conversation_id: str, conversation: models.ConversationU
 
     # Remove existing tools and add new ones
     # [] 로 보낸다면 삭제하겠다는 의미
-    if params_ex['component_configuration'] == 'all':
+    if 'component_configuration' in params_ex and params_ex['component_configuration'] == 'all':
         """
         공개된 도구와 
         공개된 데이터 소스.

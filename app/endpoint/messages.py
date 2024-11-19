@@ -10,6 +10,7 @@ from ai_core.conversation.message.base import DaisyMessageRole
 from ai_core.data_source.base import create_data_source, create_data_source_tool
 from ai_core.data_source.utils.utils import create_collection_name
 from ai_core.llm_api_provider import LlmApiProvider
+from app.endpoint.prompt import replace_variables
 from app.endpoint.tools import construct_file_save_path, convert_db_tool_to_pydantic
 from app.models import Message , MessageCreate
 from app.database import SessionLocal, get_db , KST
@@ -30,11 +31,14 @@ import logging
 from ai_core.llm.base import create_chat_model
 from ai_core.tool.base import load_tool
 import json
+import app.config
 
 logger = logging.getLogger('sqlalchemy.engine')
 
 router = APIRouter()
 
+opensearch_hosts = os.getenv('opensearch_hosts')
+opensearch_auth = (os.getenv('opensearch_username'), os.getenv('opensearch_password'))
 
 # stream 같은것을 사용할 때 
 def get_db_async():
@@ -55,6 +59,19 @@ def get_db_async():
 
 # CRUD operations for Messages
 
+def get_sum_token(collected_chunks, token_type):
+    """
+    Calculate the sum of a specific token type from the collected responses.
+
+    :param collected_response_all: The list of response objects.
+    :param token_type: The type of token to sum ('total_tokens', 'input_tokens', 'output_tokens').
+    :return: The sum of the specified token type.
+    """
+    return pydash.chain(collected_chunks) \
+        .map(lambda x: getattr(x.tokens_usage,token_type) if x.tokens_usage and hasattr(x.tokens_usage,token_type) else 0) \
+        .sum() \
+        .value()
+
 def format_traceback(exc):
     """Convert the traceback into a more readable format."""
     tb_str = ''.join(traceback.format_exception(etype=type(exc), value=exc, tb=exc.__traceback__))
@@ -66,6 +83,7 @@ async def create_message(
     db: Session = Depends(get_db_async),
     session_data: SessionData = Depends(verifier)
 ):
+    logging.info("/messages 를 시작합니다.")
     db_conversation = db.query(database.Conversation).filter(database.db_comment_endpoint).filter(database.Conversation.conversation_id==message.conversation_id).first()
 
     if db_conversation is None: 
@@ -95,34 +113,36 @@ async def create_message(
         async_conn_pool=database.async_conn_pool
     )
 
-    # prompts 추가
+    # prompts 추가.  message 에 넣는다.
     if db_conversation.messages :
         # 메세지중 프롬프트를 찾는다.
         db_message_prompts = pydash.filter_(db_conversation.messages,{'input_path':'prompt'})
         if db_message_prompts: 
             add_to_prompt = []
-            db_prompt = db_conversation.prompts[0]
-            # variable
-            variables ={}
-            for db_variable in db_conversation.variables:
-                # setattr(variables, db_variable.variable_name, db_variable.variable_value)
-                variables[db_variable.variable_name] = db_variable.variable_value
-            
-            for db_message_prompt in db_message_prompts:
-                prompt = (db_message_prompt.message_type,db_message_prompt.message)
-                add_to_prompt.append(prompt)
+            # db_prompt = db_conversation.prompts[0]
+            for db_prompt in db_conversation.prompts:
+                # variable
+                variables ={}
+                for db_variable in db_conversation.variables:
+                    # setattr(variables, db_variable.variable_name, db_variable.variable_value)
+                    variables[db_variable.variable_name] = db_variable.variable_value
+                
+                for db_message_prompt in db_message_prompts:
+                    prompt = (db_message_prompt.message_type,db_message_prompt.message)
+                    add_to_prompt.append(prompt)
 
-            prompt_component = PromptComponent(
-                name=db_prompt.prompt_title,
-                description = db_prompt.prompt_desc,
-                messages=add_to_prompt,
-                input_values=variables
-            )
-            logger.info(f"create_message: tool append {db_prompt.prompt_title}") 
-            conversation_instance.add_prompt(prompt_component)
+                prompt_component = PromptComponent(
+                    name=db_prompt.prompt_title,
+                    description = db_prompt.prompt_desc,
+                    messages=add_to_prompt,
+                    input_values={}
+                )
+                logging.info(f"create_message: tool append {db_prompt.prompt_title}") 
+                conversation_instance.add_prompt(prompt_component)     
+    
 
     # tool 추가
-    logger.info(f"tool 추가")
+    logging.info(f"tool 추가")
     for tool in db_conversation.tools:
         pydantic_tool = convert_db_tool_to_pydantic(tool)
         file_save_path = construct_file_save_path(pydantic_tool)
@@ -143,8 +163,21 @@ async def create_message(
         )
 
         # prompt. please complete below area
-
-        # tool
+        agent_prompt_messages_list = []
+        agent_variables = set()
+        for db_agent_variable in db_agent.variables:
+            if db_agent_variable.variable_name not in agent_variables:
+                agent_variables.add((db_agent_variable.variable_name,db_agent_variable.variable_value))
+                
+        agent_variables_dict = dict(agent_variables)    
+        for db_agent_prompt in db_agent.prompts:
+            for db_agent_prompt_message in db_agent_prompt.promptMessage:
+                agent_prompt_message = replace_variables(db_agent_prompt_message.message ,agent_variables_dict)
+                agent_prompt = (db_agent_prompt_message.message_type,agent_prompt_message)
+                agent_prompt_messages_list.append(agent_prompt)
+            
+        
+        # agent tool
         agent_tools = []
         for db_agent_tool in db_agent.tools:
             pydantic_tool_agent = convert_db_tool_to_pydantic(db_agent_tool)
@@ -157,13 +190,15 @@ async def create_message(
             agent_tools.append(agent_tool)
             # logger.info(f"functionName for debug: {conversation_instance.tools[0].name}")
         
-        # datasources
+        # agent datasources
         for db_agent_datasource in db_agent.datasources:
             agent_data_source = create_data_source(
                 data_source_name=db_agent_datasource.name,
                 created_by=db_agent_datasource.create_user_info.nickname,
                 description=db_agent_datasource.description,
-                data_source_type=db_agent_datasource.datasource_type
+                data_source_type=db_agent_datasource.datasource_type,
+                opensearch_hosts=opensearch_hosts,
+                opensearch_auth=opensearch_auth
             )
             for db_agent_embedding in db_agent_datasource.embeddings:
                 # 데이터 소스에 컬렉션 추가
@@ -174,8 +209,7 @@ async def create_message(
                     llm_api_key=db_agent_embedding.llm_api.llm_api_key,
                     llm_api_url=db_agent_embedding.llm_api.llm_api_url,
                     llm_embedding_model_name=db_agent_embedding.embedding_model,
-                    persist_directory=CHROMA_DB_DEFAULT_PERSIST_DIR
-                    ,last_update_succeeded_at = db_agent_embedding.success_at
+                    last_update_succeeded_at=db_agent_embedding.success_at
                 )
             latest_collection_agent = agent_data_source.get_latest_collection()
             if latest_collection_agent is not None:
@@ -186,12 +220,14 @@ async def create_message(
                 )
                 logger.info(f"create_message: agent_tools datasource append {db_agent_datasource.name}") 
                 agent_tools.append(agent_datasource_tool)
+        
         # add agent
         conversation_instance.add_agent(
             name=db_agent.name,
             description=db_agent.description,
             chat_model=chat_model,
-            tools=agent_tools
+            tools=agent_tools,
+            prompt_messages=agent_prompt_messages_list
         )
         
     # datasource 추가
@@ -200,7 +236,9 @@ async def create_message(
             data_source_name=db_datasource.name,
             created_by=db_datasource.create_user_info.nickname,
             description=db_datasource.description,
-            data_source_type=db_datasource.datasource_type
+            data_source_type=db_datasource.datasource_type,
+            opensearch_hosts=opensearch_hosts,
+            opensearch_auth=opensearch_auth
         )
         for db_embedding in db_datasource.embeddings:
             # # 3. 데이터 소스에 컬렉션 추가
@@ -211,8 +249,7 @@ async def create_message(
                 llm_api_key=db_embedding.llm_api.llm_api_key,
                 llm_api_url=db_embedding.llm_api.llm_api_url,
                 llm_embedding_model_name=db_embedding.embedding_model,
-                persist_directory=CHROMA_DB_DEFAULT_PERSIST_DIR
-                ,last_update_succeeded_at = db_embedding.success_at
+                last_update_succeeded_at=db_embedding.success_at
             )
         latest_collection = data_source.get_latest_collection()
         if latest_collection is not None:
@@ -252,6 +289,9 @@ async def create_message(
                 conversation_id = db_conversation.conversation_id,
                 message_type = message_ai.role.value,
                 message = joined_texts,
+                input_token = get_sum_token([message_ai],'input_tokens'),
+                output_token =  get_sum_token([message_ai],'output_tokens'),
+                total_token = get_sum_token([message_ai],'total_tokens'),
                 input_path = 'conversation'
             )
             
@@ -261,10 +301,11 @@ async def create_message(
             
             
         # used tokend
-        used_tokens = db_conversation.used_tokens
-        if used_tokens is None:
-            used_tokens = 0
-        db_conversation.used_tokens = used_tokens + pydash.sum_by(processed_messages,'tokens_usage')
+        db_conversation.used_tokens = (db_conversation.used_tokens or 0) + get_sum_token(messages_all, 'total_tokens')
+        # input_token
+        db_conversation.input_token = (db_conversation.input_token or 0) + get_sum_token(messages_all, 'input_tokens')
+        # output token
+        db_conversation.output_token = (db_conversation.output_token or 0) + get_sum_token(messages_all, 'output_tokens')
     async def message_generator():
         try: 
             logger.info("create_message: conversation invoke")
@@ -328,6 +369,8 @@ async def create_message(
                 "traceback": trace_str.split("\n")
                 # "traceback": format_traceback(e)
             }
+            logging.info(f"Error When message by invoke : {e}")
+            logging.info(trace_str)
             
             yield json.dumps(error_message,ensure_ascii=False) + "\n"
             # yield json.dumps(e.body)
@@ -494,34 +537,36 @@ async def create_message_stream(
     
 
 
-    # prompts 추가
+    # prompts 추가.  message 에 넣는다.
     if db_conversation.messages :
         # 메세지중 프롬프트를 찾는다.
         db_message_prompts = pydash.filter_(db_conversation.messages,{'input_path':'prompt'})
         if db_message_prompts: 
             add_to_prompt = []
-            db_prompt = db_conversation.prompts[0]
-            # variable
-            variables ={}
-            for db_variable in db_conversation.variables:
-                # setattr(variables, db_variable.variable_name, db_variable.variable_value)
-                variables[db_variable.variable_name] = db_variable.variable_value
-            
-            for db_message_prompt in db_message_prompts:
-                prompt = (db_message_prompt.message_type,db_message_prompt.message)
-                add_to_prompt.append(prompt)
+            # db_prompt = db_conversation.prompts[0]
+            for db_prompt in db_conversation.prompts:
+                # variable
+                variables ={}
+                for db_variable in db_conversation.variables:
+                    # setattr(variables, db_variable.variable_name, db_variable.variable_value)
+                    variables[db_variable.variable_name] = db_variable.variable_value
+                
+                for db_message_prompt in db_message_prompts:
+                    prompt = (db_message_prompt.message_type,db_message_prompt.message)
+                    add_to_prompt.append(prompt)
 
-            prompt_component = PromptComponent(
-                name=db_prompt.prompt_title,
-                description = db_prompt.prompt_desc,
-                messages=add_to_prompt,
-                input_values=variables
-            )
-            logger.info(f"create_message_stream: tool append {db_prompt.prompt_title}") 
-            conversation_instance.add_prompt(prompt_component)
+                prompt_component = PromptComponent(
+                    name=db_prompt.prompt_title,
+                    description = db_prompt.prompt_desc,
+                    messages=add_to_prompt,
+                    input_values={}
+                )
+                logging.info(f"create_message: tool append {db_prompt.prompt_title}") 
+                conversation_instance.add_prompt(prompt_component)  
 
 
     # tool 추가
+    logging.info(f"tool 추가")
     for tool in db_conversation.tools:
         pydantic_tool = convert_db_tool_to_pydantic(tool)
         file_save_path = construct_file_save_path(pydantic_tool)
@@ -542,8 +587,20 @@ async def create_message_stream(
         )
 
         # prompt. please complete below area
+        agent_prompt_messages_list = []
+        agent_variables = set()
+        for db_agent_variable in db_agent.variables:
+            if db_agent_variable.variable_name not in agent_variables:
+                agent_variables.add((db_agent_variable.variable_name,db_agent_variable.variable_value))
+                
+        agent_variables_dict = dict(agent_variables)    
+        for db_agent_prompt in db_agent.prompts:
+            for db_agent_prompt_message in db_agent_prompt.promptMessage:
+                agent_prompt_message = replace_variables(db_agent_prompt_message.message ,agent_variables_dict)
+                agent_prompt = (db_agent_prompt_message.message_type,agent_prompt_message)
+                agent_prompt_messages_list.append(agent_prompt)
 
-        # tool
+        # agent tool
         agent_tools = []
         for db_agent_tool in db_agent.tools:
             pydantic_tool_agent = convert_db_tool_to_pydantic(db_agent_tool)
@@ -556,13 +613,15 @@ async def create_message_stream(
             agent_tools.append(agent_tool)
             # logger.info(f"functionName for debug: {conversation_instance.tools[0].name}")
         
-                # datasources
+        # agent  datasources
         for db_agent_datasource in db_agent.datasources:
             agent_data_source = create_data_source(
                 data_source_name=db_agent_datasource.name,
                 created_by=db_agent_datasource.create_user_info.nickname,
                 description=db_agent_datasource.description,
-                data_source_type=db_agent_datasource.datasource_type
+                data_source_type=db_agent_datasource.datasource_type,
+                opensearch_hosts=opensearch_hosts,
+                opensearch_auth=opensearch_auth
             )
             for db_agent_embedding in db_agent_datasource.embeddings:
                 # 데이터 소스에 컬렉션 추가
@@ -573,8 +632,7 @@ async def create_message_stream(
                     llm_api_key=db_agent_embedding.llm_api.llm_api_key,
                     llm_api_url=db_agent_embedding.llm_api.llm_api_url,
                     llm_embedding_model_name=db_agent_embedding.embedding_model,
-                    persist_directory=CHROMA_DB_DEFAULT_PERSIST_DIR
-                    ,last_update_succeeded_at = db_agent_embedding.success_at
+                    last_update_succeeded_at=db_agent_embedding.success_at
                 )
             latest_collection_agent = agent_data_source.get_latest_collection()
             if latest_collection_agent is not None:
@@ -591,7 +649,8 @@ async def create_message_stream(
             name=db_agent.name,
             description=db_agent.description,
             chat_model=chat_model,
-            tools=agent_tools
+            tools=agent_tools,
+            prompt_messages=agent_prompt_messages_list
         )
         
     # datasource 추가
@@ -600,19 +659,21 @@ async def create_message_stream(
             data_source_name=db_datasource.name,
             created_by=db_datasource.create_user_info.nickname,
             description=db_datasource.description,
-            data_source_type=db_datasource.datasource_type
+            data_source_type=db_datasource.datasource_type,
+            opensearch_hosts=opensearch_hosts,
+            opensearch_auth=opensearch_auth
         )
         for db_embedding in db_datasource.embeddings:
             # # 3. 데이터 소스에 컬렉션 추가
-            collection_name = create_collection_name(data_source.datasource_id, db_embedding.embedding_model)
+            collection_name = create_collection_name(data_source.id, db_embedding.embedding_model)
+            logging.info(f"add collection for message: {collection_name}  to {db_datasource.datasource_id}" )
             collection = data_source.add_collection(
                 collection_name=collection_name,
                 llm_api_provider=LlmApiProvider(db_embedding.llm_api.llm_api_provider),
                 llm_api_key=db_embedding.llm_api.llm_api_key,
                 llm_api_url=db_embedding.llm_api.llm_api_url,
                 llm_embedding_model_name=db_embedding.embedding_model,
-                persist_directory=CHROMA_DB_DEFAULT_PERSIST_DIR
-                ,last_update_succeeded_at = db_embedding.success_at
+                last_update_succeeded_at=db_embedding.success_at
             )
         latest_collection = data_source.get_latest_collection()
         if latest_collection is not None:
@@ -649,20 +710,20 @@ async def create_message_stream(
                     message_type = first_message.role.value,
                     # message_type = message_ai.raw_message.type,
                     message = joined_messages,
+                    input_token = get_sum_token(group_message,'input_tokens'),
+                    output_token =  get_sum_token(group_message,'output_tokens'),
+                    total_token = get_sum_token(group_message,'total_tokens'),
                     input_path = 'conversation'
                 )
                 db.add(db_message_ai)
                 added_messages.append(db_message_ai)
             
         # used tokend
-        total_tokens_usage = pydash.chain(collected_response_all) \
-        .map_(lambda x: x.tokens_usage.total_tokens if x.tokens_usage and x.tokens_usage.total_tokens is not None else 0) \
-        .sum_() \
-        .value()
-        used_tokens = db_conversation.used_tokens
-        if used_tokens is None:
-            used_tokens = 0
-        db_conversation.used_tokens = used_tokens + total_tokens_usage
+        db_conversation.used_tokens = (db_conversation.used_tokens or 0) + get_sum_token(collected_response_all, 'total_tokens')
+        # input token 
+        db_conversation.input_token = (db_conversation.input_token or 0) + get_sum_token(collected_response_all, 'input_tokens')
+        # output token
+        db_conversation.output_token = (db_conversation.output_token or 0) + get_sum_token(collected_response_all, 'output_tokens')
 
         db.flush()  # Commit to get the message ID
         db_conversation.last_conversation_time = datetime.now(KST)  # Set current datetime
@@ -676,15 +737,27 @@ async def create_message_stream(
             await conversation_instance.create_agent(debug=True)
             logger.info("create_message_stream: conversation stream")
             async for chunk in conversation_instance.stream(message.conversation_id, message.message):
-                collected_response.append(chunk.message)
-                collected_response_all.append(chunk)
-                yield_chunk = {
-                    "id" : chunk.id,
-                    "message" : chunk.message.encode('utf-8').decode('utf-8'),
-                    "message_type" : chunk.role.value,
-                    "sent_at": datetime.now(KST).strftime('%Y-%m-%dT%H:%M:%S')
-                }                
-                yield json.dumps(yield_chunk,ensure_ascii=False)
+                try: 
+                    collected_response.append(chunk.message)
+                    collected_response_all.append(chunk)
+                    yield_chunk = {
+                        "id" : chunk.id,
+                        "message" : chunk.message.encode('utf-8').decode('utf-8'),
+                        "message_type" : chunk.role.value,
+                        "sent_at": datetime.now(KST).strftime('%Y-%m-%dT%H:%M:%S')
+                    }                
+                    yield json.dumps(yield_chunk,ensure_ascii=False)
+                except ValueError as e:
+                    logging.error(f"error when {message.conversation_id} ")
+                    yield_chunk = {
+                        "id" : chunk.id,
+                        "message" : f"{str(e)}",
+                        "message_type" : chunk.role.value,
+                        "sent_at": datetime.now(KST).strftime('%Y-%m-%dT%H:%M:%S')
+                    }                
+                    yield json.dumps(yield_chunk,ensure_ascii=False)
+                    break
+                    
                 # yield chunk.message_aaa  # 에러유발
             await save_response_to_db()
             db.commit()
@@ -711,6 +784,8 @@ async def create_message_stream(
                 "traceback": trace_str.split("\n")
                 # "traceback": format_traceback(e)
             }
+            logging.info(f"Error When message by stream : {e}")
+            logging.info(trace_str)
             
             yield json.dumps(error_message,ensure_ascii=False)
             # yield json.dumps(e.body)

@@ -1,22 +1,25 @@
 import asyncio
 from datetime import datetime
-from typing import Iterable
 
-from ai_core import AI_CORE_ROOT_DIR
 from ai_core.data_source.base import DataSourceType, create_data_source
-from ai_core.data_source.model.document import Document
 from ai_core.data_source.splitter import SplitterType, create_splitter
 from ai_core.data_source.utils.utils import create_collection_name, split_texts
 from ai_core.data_source.vectorstore.search_type import Similarity
 from ai_core.llm_api_provider import LlmApiProvider
 
 async def main():
+    doc_file_path = "/Users/1113593/Downloads/5G SA 도입관련 과금 세부화 내역 조회 시스템 요건(Ver.042).docx"
+    opensearch_hosts = 'localhost:9200'
+    opensearch_auth = ('admin', 'Skapfhd3122!@') # For testing only. Don't store credentials in code.
+
     # 1. 데이터 소스 생성
     data_source = create_data_source(
         data_source_name="billing_granularify_system_requirements",
         created_by="your_nickname",
         description="test description",
-        data_source_type=DataSourceType.DOC_FILE.value)
+        data_source_type=DataSourceType.DOC_FILE.value,
+        opensearch_hosts=opensearch_hosts,
+        opensearch_auth=opensearch_auth)
 
     llm_api_provider = LlmApiProvider.SMART_BEE.value
     embedding_model_name = "text-embedding-3-large"
@@ -29,31 +32,23 @@ async def main():
         llm_api_provider=llm_api_provider,
         llm_api_key="ba3954fe-9cbb-4599-966b-20b04b5d3441",
         llm_api_url="https://aihub-api.sktelecom.com/aihub/v1/sandbox",
-        llm_embedding_model_name=embedding_model_name,
-        persist_directory=AI_CORE_ROOT_DIR + "/data/billing_granularify_system_requirements_chromadb")
+        llm_embedding_model_name=embedding_model_name)
 
     preview_start = datetime.now()
     preview_data = data_source.load_preview_data(
-        doc_file_path="/Users/1113593/Downloads/5G SA 도입관련 과금 세부화 내역 조회 시스템 요건(Ver.042).docx")
+        doc_file_path=doc_file_path)
     preview_end = datetime.now()
     print(preview_data)
     print("Preview data loaded in ", str(preview_end - preview_start))
 
-    # 3. 데이터를 텍스트 파일로 저장
-    save_task = asyncio.create_task(
-        data_source.save_data(
-            doc_file_path="/Users/1113593/Downloads/5G SA 도입관련 과금 세부화 내역 조회 시스템 요건(Ver.042).docx"))
-    print("Data saving task started")
+    # 3. 데이터를 Opensearch에 저장
+    data_source.save_data(doc_file_path=doc_file_path)
 
-    def save_callback(future):
-        print("Data saved successfully")
+    print("Data saved successfully")
 
-    save_task.add_done_callback(save_callback)
+    # 4. 데이터 임베딩 및 Vectorstore에 추가
+    documents = data_source.read_data()
 
-    await save_task
-
-    # 4. 데이터 임베딩 및 ChromaDB에 추가
-    documents: Iterable[Document] = data_source.read_data()
     splitter = create_splitter(SplitterType.RecursiveCharacterTextSplitter, chunk_size=2000, chunk_overlap=200)
     splitted_documents = split_texts(documents, splitter)
 
@@ -69,8 +64,7 @@ async def main():
             print("Embedding task failed: ", e)
             print("Update embedding state to failed")
 
-
-    embed_task = asyncio.create_task(collection.embed_documents_and_overwrite_to_chromadb(documents=splitted_documents))
+    embed_task = asyncio.create_task(collection.embed_documents_and_overwrite_to_vectorstore(documents=splitted_documents))
     embed_task.add_done_callback(embed_callback)
     print("Embedding task started")
 
@@ -78,7 +72,7 @@ async def main():
 
     # 5. 유사도 검색
     query = "과금 세부화 조회 시스템 요건"
-    query_results  = collection.similarity_search(query=query, k=4)
+    query_results  = collection.similarity_search(query=query, search_type=Similarity(k=4))
     for result in query_results :
         print(result.page_content)
 
@@ -92,6 +86,9 @@ async def main():
         search_type=Similarity(k=5),
         name="Very Important tool name",
         description="Very Important Description")
+
+    # Unclosed client session warning 제거
+    await collection.vectorstore.async_client.close()
 
 
 asyncio.run(main())

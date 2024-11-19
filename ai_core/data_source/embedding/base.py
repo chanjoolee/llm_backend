@@ -100,9 +100,9 @@ class SmartBeeEmbeddingModelFactory(EmbeddingModelFactory):
 
     # model_name: model_provider, embedding_price, max_input_tokens, request_interval_sec
     supported_models: dict[str, list[Any]] = {
-                        "text-embedding-3-small": [EmbeddingModelProvider.OPENAI, 0.02, 8191, 3],
-                        "text-embedding-3-large": [EmbeddingModelProvider.OPENAI, 0.13, 8191, 3],
-                        "text-embedding-ada-002": [EmbeddingModelProvider.OPENAI, 0.10, 8191, 3]}
+                        "text-embedding-3-small": [EmbeddingModelProvider.OPENAI, 0.02, 8191, 1],
+                        "text-embedding-3-large": [EmbeddingModelProvider.OPENAI, 0.13, 8191, 1],
+                        "text-embedding-ada-002": [EmbeddingModelProvider.OPENAI, 0.10, 8191, 1]}
 
 
 class AzureEmbeddingModelFactory(EmbeddingModelFactory):

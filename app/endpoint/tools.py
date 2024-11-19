@@ -19,23 +19,24 @@ router = APIRouter()
 
 
 def convert_db_tool_to_pydantic(db_tool: database.Tool) -> models.Tool:
-    return models.Tool(
-        tool_id=db_tool.tool_id,
-        name=db_tool.name,
-        description=db_tool.description,
-        visibility=db_tool.visibility,
-        tool_configuration=db_tool.tool_configuration,
-        code=db_tool.code,
-        git_url=db_tool.git_url,
-        git_branch=db_tool.git_branch,
-        git_path=db_tool.git_path,
-        tags=db_tool.tags,
-        create_user=db_tool.create_user,
-        update_user=db_tool.update_user,
-        created_at=db_tool.created_at,
-        updated_at=db_tool.updated_at,
-        create_user_info=db_tool.create_user_info
-    )
+    # return models.Tool(
+    #     tool_id=db_tool.tool_id,
+    #     name=db_tool.name,
+    #     description=db_tool.description,
+    #     visibility=db_tool.visibility,
+    #     tool_configuration=db_tool.tool_configuration,
+    #     code=db_tool.code,
+    #     git_url=db_tool.git_url,
+    #     git_branch=db_tool.git_branch,
+    #     git_path=db_tool.git_path,
+    #     tags=db_tool.tags,
+    #     create_user=db_tool.create_user,
+    #     update_user=db_tool.update_user,
+    #     created_at=db_tool.created_at,
+    #     updated_at=db_tool.updated_at,
+    #     create_user_info=db_tool.create_user_info
+    # )
+    return models.Tool.from_orm(db_tool)
 
 def sanitize_git_url(git_url: str) -> str:
     # Replace special characters with underscores or other safe characters

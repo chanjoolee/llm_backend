@@ -210,11 +210,12 @@ class Conversation(BaseModel):
             elif kind == 'on_tool_start':
                 data = e['data']
                 tool_call = ToolCall(run_id=e['run_id'], inputs=data['input'], name=e['name'])
-                yield DaisyMessage.convert_tool_call_to_daisy_message(tool_call)
+                tool_call_message = f"도구 '{tool_call.name}'을 {tool_call.inputs} 인자로 실행합니다."
+                yield DaisyMessage.convert_tool_call_to_daisy_message(tool_call, tool_call_message)
             elif kind == 'on_tool_end':
                 data = e['data']
                 tool_call = ToolCall(run_id=e['run_id'], output=data['output'], name=e['name'])
-                yield DaisyMessage.convert_tool_call_to_daisy_message(tool_call)
+                yield DaisyMessage.convert_tool_call_to_daisy_message(tool_call, data['output'].content)
 
             if not handled_event and debug:
                 print(f"Unhandled event: {e}")

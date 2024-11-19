@@ -91,9 +91,9 @@ def create_sync_connection_pool():
         database_name = os.getenv('history_connection_database')
 
         encoded_password = quote(password)
-        connection_url = f"mysql+pymysql://{username}:{encoded_password}@{host}:{port}/{database_name}"
-        connection_url_checkpoint = f"mysql://{username}:{encoded_password}@{host}:{port}/{database_name}"
-        checkpointer_setup(connection_url_checkpoint)
+        # connection_url = f"mysql+pymysql://{username}:{encoded_password}@{host}:{port}/{database_name}"
+        # connection_url_checkpoint = f"mysql://{username}:{encoded_password}@{host}:{port}/{database_name}"
+        # checkpointer_setup(connection_url_checkpoint)
         sync_conn_pool = MySQLSaver.create_sync_connection_pool(
             host=host,
             user=username,
@@ -123,6 +123,14 @@ async def create_async_connection_pool():
             port=int(port),
             autocommit=True
         )
+        
+        # Test a query
+        # async with async_conn_pool.acquire() as aconnection:
+        #     async with aconnection.cursor() as a_cursor:
+        #         await a_cursor.execute("SELECT VERSION()")
+        #         version = await a_cursor.fetchone()
+        #         print("Database version:", version[0])
+                
     return async_conn_pool
 
 async def get_async_connection_pool():
@@ -285,7 +293,9 @@ class Conversation(Base):
 
     temperature = Column(Float, nullable=False , comment='')
     max_tokens = Column(Integer, nullable=False , comment='최대토큰')
-    used_tokens = Column(Integer, nullable=True , comment='토큰사용량')
+    input_token = Column(Integer, default=0)
+    output_token = Column(Integer, default=0)
+    used_tokens = Column(Integer, nullable=True , comment='총토큰사용량')
     component_configuration = Column(String(255), nullable=False, default='none', comment='Component Configuration')  # New field
 
     last_conversation_time = Column(TIMESTAMP, comment='마지막 대화시간')
@@ -351,7 +361,15 @@ class Message(Base):
     message_type = Column(String(20), nullable=False, comment='메세지타입 ai,human,system')
     message = Column(Text, nullable=False, comment='메세지내용')
     input_path = Column(String(20), nullable=False, comment='입력경로 prompt,conversation')
+    
+    # New Columns
+    input_token = Column(Integer, default=0)
+    output_token = Column(Integer, default=0)
+    total_token = Column(Integer, default=0)
+    
     sent_at = Column(TIMESTAMP, default=lambda: datetime.now(KST), comment='보낸시간')
+    
+    
 
     conversation = relationship("Conversation", back_populates="messages")
 
@@ -451,7 +469,7 @@ class Prompt(Base):
 
     prompt_id = Column(Integer, primary_key=True, index=True,comment='프롬프트ID')
     prompt_title =  Column(String(255), nullable=False , comment='프롬프트제목') 
-    prompt_desc = Column(String(400), nullable=False , comment='프롬프트설명') 
+    prompt_desc = Column(Text, nullable=False , comment='프롬프트설명') 
     open_type = Column(String(20), default='private', comment='private,public')
     # tags = Column(Text, nullable=False, comment='태그')
 
@@ -632,7 +650,7 @@ class Agent(Base):
     __tablename__ = "agents"
     agent_id = Column(Integer, primary_key=True, index=True)
     name = Column(String(255), index=True)
-    description = Column(String(255), nullable=True)
+    description = Column(Text, nullable=True)
     visibility = Column(String(255), nullable=False, default='private')  # private or public
     llm_api_id = Column(Integer, ForeignKey('llm_api.llm_api_id'), nullable=True)
     llm_model = Column(String(255), nullable=False)
@@ -759,10 +777,9 @@ class DataSource(Base):
     create_user_info = relationship("User", back_populates="datasources")
 
 class EmbeddingStatus(Enum):
-    PENDING = 'pending'
-    IN_PROGRESS = 'in_progress'
-    COMPLETED = 'completed'
-    FAILED = 'failed'
+    updating = 'updating'
+    updated = 'updated'
+    failed = 'failed'
 
 class Embedding(Base):
     """
@@ -807,7 +824,7 @@ class Embedding(Base):
     max_chunk_size = Column(Integer, nullable=True, comment='Max chunk size for RecursiveJsonSplitter')
 
 
-    status = Column(String(255), nullable=False, default=EmbeddingStatus.PENDING, comment='Status of the embedding process  pending,in_progress,completed,failed')
+    status = Column(String(255), nullable=False, default=EmbeddingStatus.updating, comment='Status of the embedding process  updating,updated,faild')
     data_size = Column(Integer, nullable=True, comment="Size of the data in kilobytes")
     started_at = Column(TIMESTAMP, nullable=True, comment='Timestamp when the embedding started')
     completed_at = Column(TIMESTAMP, nullable=True, comment='Timestamp when the embedding completed')

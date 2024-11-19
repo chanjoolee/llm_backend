@@ -1,3 +1,4 @@
+from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session , joinedload
 from sqlalchemy import or_ , insert , delete , select, text
@@ -168,6 +169,7 @@ def update_prompt(prompt_id: int, prompt: models.PromptUpdate, db: Session = Dep
             setattr(db_prompt, key, value)
 
     db_prompt.update_user = session_data.user_id
+    db_prompt.updated_at = datetime.now(database.KST)
 
     # Add tags to the prompt
     if 'tag_ids' in params_ex and len(params_ex['tag_ids']) > 0 :
@@ -310,12 +312,19 @@ def search_prompts(search: models.PromptSearch, db: Session = Depends(get_db), s
         database.Prompt.open_type == 'public'
     ]
     query = query.filter(or_(*user_filter_basic))
+     
     if 'user' in search_exclude and len(search_exclude['user']) > 0:
         query = query.filter(database.Prompt.create_user .in_(search_exclude['user']))
 
     # 사용자 End
+    
 
     total_count = query.count()
+    
+    
+    # order by 
+    query = query.order_by(database.Prompt.updated_at.desc())  
+    
     # Pagination
     if 'skip' in search_exclude and 'limit' in search_exclude:
         query = query.offset(search_exclude['skip']).limit(search_exclude['limit'])

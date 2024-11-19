@@ -160,12 +160,14 @@ class ConversationUpdate(BaseModel):
     llm_api_id: Optional[int] = Field(None, description="대화종류 private public")
     llm_model : Optional[str] =  Field('gpt-4o', description="LLM Model. LLM API에서 입력된 값중 하나만 입력")
     temperature: Optional[float] = Field(0.5, description="")
-    max_tokens: Optional[int] = Field(1024, description="최대토큰")
+    max_tokens: Optional[int] = Field(0, description="최대토큰")
+    input_token : Optional[int] = Field(0, description="input토큰")
+    output_token : Optional[int] = Field(0, description="output토큰")
     used_tokens: Optional[int] = Field(0, description="토큰사용량")
     last_conversation_time: Optional[datetime] = Field(None, description="마지막 대화시간")
     last_message_id: Optional[int] = Field(None, description="메세지ID")  # Changed from Integer to int
     started_at: Optional[datetime] = Field(None, description="생성일")
-    component_configuration: str = Field('none', description="Component Configuration none,component,agent,all")  # New field
+    component_configuration: Optional[str] = Field('none', description="Component Configuration none,component,agent,all")  # New field
     prompts: Optional[List[ConversatonPromptCreate]] = None
     tools: Optional[List[int]] = Field(None, description="List of tools IDs")
     agents: Optional[List[int]] = Field(None, description="List of agent IDs")
@@ -188,7 +190,9 @@ class ConversationVariable(BaseModel):
 class Conversation(ConversationBase):
     conversation_id: str
     user_id: str 
-    used_tokens : Optional[int]
+    input_token : Optional[int] = Field(0, description="input토큰")
+    output_token : Optional[int] = Field(0, description="output토큰")
+    used_tokens : Optional[int] = Field(0, description="총사용토큰")
     last_conversation_time : Optional[datetime]
     last_message_id: Optional[int]
     started_at: Optional[datetime]
@@ -239,6 +243,9 @@ class Message(MessageBase):
     message_id: int
     message_type: str = "human"
     sent_at: Optional[datetime]
+    input_token: Optional[int] = Field(0, description="input 토큰사용량")
+    output_token: Optional[int] = Field(0, description="output 토큰사용량")
+    total_token: Optional[int] = Field(0, description="토탈토큰사용량")
     # conversation : Optional[Conversation]
 
     class Config:
@@ -599,6 +606,10 @@ class DatasourceCreate(DatasourceBase):
 class Datasource(DatasourceBase):
     datasource_id: str = Field(..., description="Unique identifier for the data source")
     file_path: Optional[str] = Field(None, description="File path for document or PDF")
+    
+    status: Optional[str] = Field(None, description="Status of the datasource download process  downloaded,downloading,error,cancelled")
+    downloaded_at: Optional[datetime] = Field(None, description="Timestamp when the datasource data downloaded")
+    
     created_at: datetime = Field(..., description="Timestamp when the data source was created")
     updated_at: datetime = Field(..., description="Timestamp for the last update to the data source")
     uploaded_at: Optional[datetime] = Field(None, description="Timestamp when the data was uploaded")
@@ -776,7 +787,7 @@ class EmbeddingUpdate(EmbeddingCreate):
 class Embedding(EmbeddingBase):
     embedding_id: str = Field(..., description="Unique identifier for the embedding")
     # datasource_id: str = Field(..., description="Data source ID for which embedding is created")
-    status: str = Field(..., description="Status of the embedding process (e.g., pending, in_progress, completed, failed)")
+    status: str = Field(..., description="Status of the embedding process (e.g., )")
     data_size: Optional[int] = Field(0, description="Size of the data in kilobytes")
     started_at: Optional[datetime] = Field(None, description="Timestamp when the embedding started")
     completed_at: Optional[datetime] = Field(None, description="Timestamp when the embedding was completed")

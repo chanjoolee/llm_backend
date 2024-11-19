@@ -22,6 +22,17 @@ def install_package(package_name, version_specifier):
     except subprocess.CalledProcessError:
         print(f"Failed to install {package_name}{version_specifier}.\n")
 
+def uninstall_package(package_name):
+    """
+    Uninstalls the specified package.
+    """
+    uninstall_command = [sys.executable, '-m', 'pip', 'uninstall', '-y', package_name]
+    try:
+        subprocess.check_call(uninstall_command)
+        print(f"Successfully uninstalled {package_name}.\n")
+    except subprocess.CalledProcessError:
+        print(f"Failed to uninstall {package_name}.\n")
+
 def main():
     # Path to your requirements.txt file
     requirements_file = 'requirements.txt'
@@ -30,42 +41,31 @@ def main():
     with open(requirements_file, 'r') as f:
         requirements = f.read().splitlines()
 
-    # Parse the requirements
-    parsed_requirements = pkg_resources.parse_requirements(requirements)
+    # Parse the requirements from requirements.txt into a dictionary (case-insensitive)
+    required_packages = {}
+    for line in requirements:
+        if line.strip() and not line.startswith('#'):
+            package, _, version = line.partition('==')
+            required_packages[package.strip().lower()] = version.strip()
 
-    # Check each requirement
-    for req in parsed_requirements:
-        package_name = req.project_name
-        required_version = str(req.specifier)  # Get the version specified in requirements.txt
+    # Get the list of currently installed packages (all keys in lowercase)
+    installed_packages = {pkg.key.lower(): pkg.version for pkg in pkg_resources.working_set}
 
-        if skip_uvloop and package_name.lower() == 'uvloop':
-            print(f"Skipping installation of {package_name} on Windows.")
-            continue
+    # Install or update packages listed in requirements.txt
+    for package, required_version in required_packages.items():
+        if package in installed_packages:
+            if installed_packages[package] != required_version:
+                print(f"Updating {package} to version {required_version}...")
+                install_package(package, f"=={required_version}")
+        else:
+            print(f"Installing {package} version {required_version}...")
+            install_package(package, f"=={required_version}")
 
-        try:
-            # Check if the package is installed
-            dist = pkg_resources.get_distribution(package_name)
-            installed_version = dist.version
-
-            if required_version:
-                if dist.version not in req.specifier:
-                    print(f"{package_name} is installed with version {installed_version}, but required version is {required_version}.")
-                    print(f"Upgrading {package_name} to {required_version}...")
-                    install_package(package_name, required_version)
-            #     else:
-            #         print(f"{package_name} is installed with the correct version {installed_version}.\n")
-            # else:
-            #     print(f"{package_name} is installed with version {installed_version}. No specific version required.\n")
-
-        except pkg_resources.DistributionNotFound:
-            if required_version:
-                print(f"{package_name} is NOT installed. Required version: {required_version}.")
-                print(f"Installing {package_name}{required_version}...")
-                install_package(package_name, required_version)
-            else:
-                print(f"{package_name} is NOT installed.")
-                print(f"Installing latest version of {package_name}...")
-                install_package(package_name, "")
+    # Uninstall packages that are installed but not listed in requirements.txt
+    # for package in installed_packages.keys():
+    #     if package not in required_packages:
+    #         print(f"Uninstalling {package} as it is not listed in requirements.txt...")
+    #         uninstall_package(package)
 
 if __name__ == "__main__":
     print("Start pip version Check!")

@@ -10,8 +10,9 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.constants import END, START
 from langgraph.graph import MessagesState, StateGraph, add_messages
 from langgraph.graph.graph import CompiledGraph
-from langgraph.prebuilt import create_react_agent
 from pydantic import Field, BaseModel
+
+from ai_core.agent.react_agent import create_react_agent
 
 
 def _should_continue(state: MessagesState) -> Literal["tools", END]:
@@ -128,7 +129,7 @@ def create_supervisor_agent(chat_model: BaseChatModel, agents: list[Agent],
         "And if you want to finish the dialogue, you should make final answer to "
         "the last human question with regard to the above dialogue "
         "as much detail as possible even if there is no dialogue and return: "
-        "{{\"next_agent\": \"FINISH\", \"answer\": \"detailed answer to the question\"}}."
+        "{{\"next_agent\": \"FINISH\", \"answer\": \"A detailed response message that synthesises all of the subagent's responses.\"}}."
     )
 
     agent_names = list(map(lambda agent: agent.name, agents))
@@ -150,8 +151,8 @@ def create_supervisor_agent(chat_model: BaseChatModel, agents: list[Agent],
 
     supervisor = prompt | chat_model | parser
 
-    def call_supervisor(state: SupervisorAgentState):
-        res = supervisor.invoke(state)
+    async def acall_supervisor(state: SupervisorAgentState):
+        res = await supervisor.ainvoke(state)
         if res["next_agent"] != "FINISH":
             messages = [AIMessage(res["question_to_next_agent"], name="start")]
         else:
@@ -160,7 +161,7 @@ def create_supervisor_agent(chat_model: BaseChatModel, agents: list[Agent],
         return {"messages": messages, "next_agent": res["next_agent"]}
 
     workflow = StateGraph(SupervisorAgentState)
-    workflow.add_node("supervisor", call_supervisor)
+    workflow.add_node("supervisor", acall_supervisor)
 
     conditional_map = {k.name: k.name for k in agents}
     conditional_map["FINISH"] = END

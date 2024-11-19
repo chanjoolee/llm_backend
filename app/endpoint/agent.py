@@ -181,6 +181,7 @@ def update_agent(
     # Handle prompts associations
     if 'prompts' in update_data:
         db_agent.prompts = []
+        db_agent.variables = []
         db.query(database.AgentVariable).filter(database.AgentVariable.agent_id == agent_id).delete(synchronize_session='fetch')
         for i, prompt in enumerate(agent.prompts):
             db_prompt = db.query(database.Prompt).filter(database.Prompt.prompt_id == prompt.prompt_id).first()
@@ -193,15 +194,16 @@ def update_agent(
                 # db.execute(stmt)
                 db_agent.prompts.append(db_prompt)
 
-                for db_prompt_message in db_prompt.promptMessage:
-                    message = db_prompt_message.message
-                    for variable in prompt.variables:
-                        db_variable = database.AgentVariable(
-                            agent_id=db_agent.agent_id,
-                            variable_name=variable.variable_name,
-                            variable_value=variable.value
-                        )
-                        db.add(db_variable)
+                # for db_prompt_message in db_prompt.promptMessage:
+                #     message = db_prompt_message.message
+                    
+                for variable in prompt.variables:
+                    db_variable = database.AgentVariable(
+                        agent_id=db_agent.agent_id,
+                        variable_name=variable.variable_name,
+                        variable_value=variable.value
+                    )
+                    db.add(db_variable)
 
                     # 이 부분은 어떻게 처리를 하나 ==> conversation 을 만들때 처리하는 것이 좋을 듯. 어떻게? ...
                     # new_message = database.Message(
@@ -350,6 +352,7 @@ def search_agents(
 
     total_count = query.count()
 
+    query = query.order_by(database.Agent.updated_at.desc())
     if 'skip' in search_exclude and 'limit' in search_exclude:
         query = query.offset(search_exclude['skip']).limit(search_exclude['limit'])
 

@@ -2,6 +2,8 @@ from passlib.context import CryptContext
 import uuid
 
 from ai_core.llm_api_provider import LlmApiProvider
+from sqlalchemy.inspection import inspect
+from pydantic import BaseModel
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -28,3 +30,6 @@ def is_empty(value):
     else:
         # If none of the above types, assume the value is not empty
         return False
+    
+def sqlalchemy_to_dict(instance):
+    return {c.key: getattr(instance, c.key) for c in inspect(instance).mapper.column_attrs}

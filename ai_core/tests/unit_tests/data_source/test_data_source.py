@@ -63,9 +63,9 @@ def test_overwrite_to_chromadb(data_source, collection, single_split_data):
     """
 
     # llm_api = "test"인 경우 DeterministicFakeEmbedding 반환
-    collection.embed_documents_and_overwrite_to_chromadb(single_split_data)
-    collection.embed_documents_and_overwrite_to_chromadb(single_split_data)
-    collection.embed_documents_and_overwrite_to_chromadb(single_split_data)
+    collection.embed_documents_and_overwrite_to_vectorstore(single_split_data)
+    collection.embed_documents_and_overwrite_to_vectorstore(single_split_data)
+    collection.embed_documents_and_overwrite_to_vectorstore(single_split_data)
 
     expected: Document = get_first(single_split_data)
     actual = collection.similarity_search(query="test", k=30)
