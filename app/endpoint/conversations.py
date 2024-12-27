@@ -1,11 +1,12 @@
 import logging
-from fastapi import FastAPI, Depends, HTTPException, Query, logger
+from fastapi import FastAPI, Depends, HTTPException, Query, logger as logger_fastapi 
 from sqlalchemy.orm import Session , joinedload , selectinload
-from sqlalchemy import and_, func, or_ , text , select , exists , insert , delete 
+from sqlalchemy import and_, case, func, or_ , text , select , exists , insert , delete 
 from pydantic import BaseModel
 from typing import List , Optional
 # import ai_core.conversation
 from ai_core.tool.base import load_tool
+from app.endpoint.dashboard import rows_to_dict_list
 from app.endpoint.prompt import replace_variables
 from app.endpoint.tools import construct_file_save_path, convert_db_tool_to_pydantic
 from app.models import Conversation , ConversationCreate , ConversationCopy, ConversationSearch, MessageCreate, Message
@@ -22,6 +23,9 @@ from app.utils import utils
 from app.utils.utils import pwd_context , hash_password ,  verify_password
 import pydash
 
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 router = APIRouter()
 
 
@@ -76,6 +80,27 @@ def create_conversation(
         conversation_id = conversation_id
     )
     update_data = conversation.dict(exclude_unset=True)
+    
+    # Validate datasources for embedding_status 'updated'
+    # 프론트엔드에서도 막았지만 백엔드에도 만든다.
+    if 'datasources' in update_data:
+        datasource_ids = conversation.datasources
+        if datasource_ids:
+            for datasource_id in datasource_ids:
+                # Query for an embedding with "updated" status for the current datasource
+                updated_embedding = db.query(database.Embedding).filter(
+                    database.Embedding.datasource_id == datasource_id,
+                    database.Embedding.status == "updated",
+                    database.db_comment_endpoint
+                ).first()
+
+                # Immediately raise an exception if no updated embedding is found
+                if not updated_embedding:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"No updated embedding found for datasource ID '{datasource_id}'."
+                    )
+    
     for key, value in update_data.items():
         if key not in ["prompts", "tools","agents","datasources"]:
             setattr(db_conversation, key, value)
@@ -145,13 +170,13 @@ def create_conversation(
         """
         # tool 추가 공개된 tool 을 넣는다.
         logger.info(f"tool 추가")
-        tools_public = db.query(database.Tool).filter(database.Tool.visibility=='public').all()
+        tools_public = db.query(database.Tool).filter(database.db_comment_endpoint,database.Tool.visibility=='public').all()
         
         for db_tool in tools_public:
             db_conversation.tools.append(db_tool)
                 
         logger.info(f"datasource 추가")
-        datasource_public = db.query(database.DataSource).filter(database.DataSource.visibility=='public').all()
+        datasource_public = db.query(database.DataSource).filter(database.db_comment_endpoint,database.DataSource.visibility=='public').all()
         
         for db_datasouce in datasource_public:
             db_conversation.datasources.append(db_datasouce)
@@ -345,19 +370,16 @@ async def convert_to_private(
         db.add(new_db_variable)
 
     # tools 
-    tools_copy = db_conversation_origin.tools
-    if db_conversation_origin.user_id == 'system': 
-        # 시스템이면 
-        tools_copy = db.query(database.Tool).filter(database.Tool.visibility=='public').all()
-        for db_tool in tools_copy:
-            try:
-                pydantic_tool = convert_db_tool_to_pydantic(db_tool)
-                file_save_path = construct_file_save_path(pydantic_tool)
-                tool = load_tool(db_tool.name, session_data.nickname, file_save_path)
-                new_db_conversation.tools.append(db_tool)
-                # new_db_conversation.tools.append(db_tool)
-            except Exception as e:
-                raise HTTPException(status_code=400, detail=str(e))
+    for db_tool in db_conversation_origin.tools:
+        try:
+            pydantic_tool = convert_db_tool_to_pydantic(db_tool)
+            file_save_path = construct_file_save_path(pydantic_tool)
+            tool = load_tool(db_tool.name, session_data.nickname, file_save_path)
+            new_db_conversation.tools.append(db_tool)
+            # new_db_conversation.tools.append(db_tool)
+        except Exception as e:
+            logger.error(f"Error When tool copy : {str(e)}")
+            # raise HTTPException(status_code=400, detail=str(e))
             
 
     # agents
@@ -530,6 +552,11 @@ def read_conversations(
         - last_conversation_time (Optional): The end date until which to search for conversations.
         - search_range_list (Optional): List of fields to search within 
             (e.g., 'title', 'message').
+        - input_path_list (Optional) : 메세지 입력경로
+            (e.g  ["prompt","conversation","system"] )
+        - user_roll_list (Optional) : 생성자롤
+            (e.g  ["MANAGER","ALERT","GUEST","OWNER","SYSTEM"] )
+            
         - conversation_type_list (Optional): List of conversation types to filter by.
             - (e.g., 'public','private')
         - component_list (Optional): List of components to filter by.
@@ -550,11 +577,47 @@ def search_conversation(
     db: Session = Depends(get_db),
     session_data: SessionData = Depends(verifier)
 ):
+    query, search_exclude = search_conversation_base(search, db, session_data)
+ 
+    total_count = query.count()
+
+
+    query = query.order_by(database.Conversation.last_conversation_time.desc(),database.Conversation.started_at.desc())   
+    # Apply pagination
+    if 'skip' in search_exclude and 'limit' in search_exclude :
+        query = query.offset(search_exclude['skip']).limit(search_exclude['limit'])
+
+    # conversations = query.options(
+    #     joinedload(database.Conversation.messages) ,
+    #     joinedload(database.Conversation.llm_api)
+    # ).all()
+    query = query.options(
+        selectinload(database.Conversation.messages),
+        selectinload(database.Conversation.prompts),
+        selectinload(database.Conversation.tools)
+            .selectinload(database.Tool.tags),
+        selectinload(database.Conversation.llm_api)
+            .selectinload(database.LlmApi.create_user_info),
+        selectinload(database.Conversation.user_info),
+        selectinload(database.Conversation.variables),
+        selectinload(database.Conversation.agents),
+        selectinload(database.Conversation.datasources)
+    )
+    conversations = query.all()
+
+    # Convert SQLAlchemy models to Pydantic models
+    # pydantic_conversations = [Conversation.model_validate(conversation) for conversation in conversations]
+
+    return models.SearchConversationsResponse(totalCount=total_count, list=conversations)
+
+def search_conversation_base(search, db, session_data):
     query = db.query(database.Conversation)
+    # 대화가 일반대화인지 시스템 대화인지를 구분하기 위해
+    query = query.join(database.User, database.Conversation.user_id == database.User.user_id)  # Join users to conversations
     comment = text("/* is_endpoint_query */ 1=1")
     query = query.filter(comment)   
     search_exclude = search.dict(exclude_unset=True)
-    
+    logger.info("search_conversation")
 
     if 'started_at' in search_exclude:
         query = query.filter(database.Conversation.started_at >= search_exclude['started_at'])
@@ -589,16 +652,26 @@ def search_conversation(
             search_filter_word.append(subquery)
         query = query.filter(or_(*search_filter_word))
 
-        # else:
-        #     match_query = text("MATCH(messages.message) AGAINST(:search_words IN BOOLEAN MODE)")
-        #     subquery = select(database.Message.conversation_id).filter(
-        #         match_query.params(search_words=search.search_words)
-        #         , database.Conversation.conversation_id == database.Message.conversation_id
-        #     ).correlate(database.Conversation).exists()
-        #     query = query.filter(or_(
-        #         match_query,
-        #         subquery
-        #     ))
+    # 메세지 입력경로: prompt,conversation,system
+    # 시스템에의해 만들어졌다고 해도 . copy 된 것이면 system 이라고 해서 검색이됨
+    if 'input_path_list' in search_exclude and len(search_exclude['input_path_list']) > 0:
+        match_query = text("input_path in :input_path_list ")
+        subquery = select(database.Message.conversation_id).filter(
+            match_query.params(input_path_list=search_exclude['input_path_list'])
+            , database.Conversation.conversation_id == database.Message.conversation_id
+        ).correlate(database.Conversation).exists()
+        query = query.filter(subquery)
+    
+    # 생성자롤: MANAGER,ALERT,GUEST,OWNER
+    if 'user_roll_list' in search_exclude and len(search_exclude['user_roll_list']) > 0:
+        match_query = text("user_roll in :user_roll_list ")
+        subquery = select(database.User.user_id).filter(
+            match_query.params(user_roll_list=search_exclude['user_roll_list'])
+            , database.Conversation.user_id == database.User.user_id
+        ).correlate(database.Conversation).exists()
+        query = query.filter(subquery)   
+        
+    
     # 공개 여부
     if 'conversation_type_list' in search_exclude and len(search_exclude['conversation_type_list']) > 0:
         query = query.filter(database.Conversation.conversation_type.in_(search_exclude['conversation_type_list']))
@@ -615,71 +688,112 @@ def search_conversation(
     query = query.filter(or_(*user_filter_basic))
     if 'user_list' in search_exclude and len(search_exclude['user_list']) > 0:
         query = query.filter(database.Conversation.user_id.in_(search_exclude['user_list']))
-        # 참고
-        # public_user_filter = text("""(
-        # conversations.user_id in :user_list 
-        # and conversations.conversation_type = 'public'
-        # )""")
-        # user_filter.append(public_user_filter.params(user_list=search_exclude['user_list']))
     
     # 사용자 End
     
     if 'llm_api_list' in search_exclude and len(search_exclude['llm_api_list']) > 0:
         query = query.filter(database.Conversation.llm_api_id.in_(search_exclude['llm_api_list']))
-        # # sub쿼리로 한다.  여기할차례  llm_api에 exits 로 한다.
-        # subquery = select(database.LlmApi.llm_api_id).filter(
-        #     database.Conversation.llm_api_id == database.LlmApi.llm_api_id
-        #     , database.LlmApi.llm_api_id.in_(search.llm_api_list)
-        # ).correlate(database.Conversation).exists()
-        # query = query.filter(subquery)
     
     if 'llm_model_list' in search_exclude and len(search_exclude['llm_model_list']) > 0:
-        # llm api 에서는 쉼표로 구분하여 입력한다.
-        # subquery = select(database.LlmApi.llm_api_id).filter(
-        #     database.Conversation.llm_api_id == database.LlmApi.llm_api_id
-        #     , database.LlmApi.llm_model.in_(search.llm_model_list)
-        # ).correlate(database.Conversation).exists()
-        # query = query.filter(subquery)
-
         # 본테이블에서 검색한다.
         query = query.filter(database.Conversation.llm_model.in_(search_exclude['llm_model_list']))
         
     if 'datasource_list' in search_exclude and len(search_exclude['datasource_list']) > 0:
-        query = query.filter(database.Conversation.datasources.in_(search_exclude['datasource_list']))
- 
-    total_count = query.count()
-
-
-
-    query = query.order_by(database.Conversation.last_conversation_time.desc())   
-    # Apply pagination
-    if 'skip' in search_exclude and 'limit' in search_exclude :
-        query = query.offset(search_exclude['skip']).limit(search_exclude['limit'])
-
-    # conversations = query.options(
-    #     joinedload(database.Conversation.messages) ,
-    #     joinedload(database.Conversation.llm_api)
-    # ).all()
-    query = query.options(
-        selectinload(database.Conversation.messages),
-        selectinload(database.Conversation.prompts),
-        selectinload(database.Conversation.tools)
-            .selectinload(database.Tool.tags),
-        selectinload(database.Conversation.llm_api)
-            .selectinload(database.LlmApi.create_user_info),
-        selectinload(database.Conversation.user_info),
-        selectinload(database.Conversation.variables),
-        selectinload(database.Conversation.agents),
-        selectinload(database.Conversation.datasources)
-    )
-    conversations = query.all()
-
-    # Convert SQLAlchemy models to Pydantic models
-    # pydantic_conversations = [Conversation.model_validate(conversation) for conversation in conversations]
-
-    return models.SearchConversationsResponse(totalCount=total_count, list=conversations)
+        subquery = (
+            select(database.conversation_datasource.c.conversation_id)
+            .join(database.DataSource, database.DataSource.datasource_id == database.conversation_datasource.c.datasource_id)
+            .filter(database.DataSource.datasource_id.in_(search_exclude['datasource_list']))
+        )
+        
+        query = query.filter(
+            exists(subquery.where(database.Conversation.conversation_id == database.conversation_datasource.c.conversation_id))
+        )
+        
+    filter_component = []  
+    if 'component_list' in search_exclude and len(search_exclude['component_list'])> 0 : 
+        for component in search_exclude['component_list']:
+            if component['type'] == 'prompt':
+                subquery = (
+                    select(database.conversation_prompt.c.conversation_id)
+                    .join(database.Prompt, database.Prompt.prompt_id == database.conversation_prompt.c.prompt_id)
+                    .filter(database.Prompt.prompt_id  == component['id']))
+                filter_component.append(
+                    exists(subquery.where(database.Conversation.conversation_id == database.conversation_prompt.c.conversation_id))
+                )
+            if component['type'] == 'tool':
+                subquery = (
+                    select(database.conversation_tools.c.conversation_id)
+                    .join(database.Tool, database.Tool.tool_id == database.conversation_tools.c.tool_id)
+                    .filter(database.Tool.tool_id  == component['id']))
+                filter_component.append(
+                    exists(subquery.where(database.Conversation.conversation_id == database.conversation_tools.c.conversation_id))
+                )
+            if component['type'] == 'agent':
+                subquery = (
+                    select(database.conversation_agent.c.conversation_id)
+                    .join(database.Agent, database.Agent.agent_id == database.conversation_agent.c.agent_id)
+                    .filter(database.Agent.agent_id  == component['id']))
+                filter_component.append(
+                    exists(subquery.where(database.Conversation.conversation_id == database.conversation_agent.c.conversation_id))
+                )
+            if component['type'] == 'datasource':
+                subquery = (
+                    select(database.conversation_datasource.c.conversation_id)
+                    .join(database.DataSource, database.DataSource.datasource_id == database.conversation_datasource.c.datasource_id)
+                    .filter(database.DataSource.datasource_id == component['id'])
+                )
+                filter_component.append(
+                    exists(subquery.where(database.Conversation.conversation_id == database.conversation_datasource.c.conversation_id))
+                )
+    query = query.filter(or_(*filter_component))
+        
+    return query,search_exclude
     # return conversations
     # return [models.Conversation.model_validate(conversation) for conversation in conversations]
+
+@router.post(
+    "/search_conversation_dashboard",
+    dependencies=[Depends(cookie)],
+    tags=["Conversations"],
+    description="""
+    대화검색 상단을 위한 function
+    페이징이 바뀌었을 때는 호출할 필요 없음.
+    
+    """
+    
+)
+def search_conversation_dashboard(
+    search: ConversationSearch,
+    db: Session = Depends(get_db),
+    session_data: SessionData = Depends(verifier)
+):
+    query, search_exclude = search_conversation_base(search, db, session_data)
+    # 그룹 날자별 
+    grouped_query = query.with_entities(
+        func.DATE_FORMAT(database.Conversation.started_at, "%Y-%m-%d").label("formatted_date"),
+        func.sum(
+            case(
+                (database.User.user_roll == 'ALERT', 1),  # If user.roll is 'ALERT', count it
+                else_=0  # Otherwise, count as 0
+            )
+        ).label("system_count"),
+        func.sum(
+            case(
+                (database.User.user_roll != 'ALERT', 1),  # If user.roll is not 'ALERT', count it
+                else_=0  # Otherwise, count as 0
+            )
+        ).label("general_count")
+    ).group_by(
+        func.DATE_FORMAT(database.Conversation.started_at, "%Y-%m-%d")
+
+    ).order_by(
+        func.DATE_FORMAT(database.Conversation.started_at, "%Y-%m-%d")  # Order by date
+    )
+    # Fetch grouped data
+    grouped_data = grouped_query.all()
+    grouped_data1 = rows_to_dict_list(grouped_data)
+    
+    return grouped_data1
 
 @router.post(
     "/search_conversation_all",
@@ -717,6 +831,7 @@ def search_conversation_all(
     query = db.query(database.Conversation)
     comment = text("/* is_endpoint_query */ 1=1")
     query = query.filter(comment)   
+    # .filter(database.db_comment_endpoint)
     search_exclude = search.dict(exclude_unset=True)
     
 
@@ -774,7 +889,15 @@ def search_conversation_all(
         query = query.filter(database.Conversation.llm_model.in_(search_exclude['llm_model_list']))
         
     if 'datasource_list' in search_exclude and len(search_exclude['datasource_list']) > 0:
-        query = query.filter(database.Conversation.datasources.in_(search_exclude['datasource_list']))
+        subquery = (
+            select(database.conversation_datasource.c.conversation_id)
+            .join(database.DataSource, database.DataSource.datasource_id == database.conversation_datasource.c.datasource_id)
+            .filter(database.DataSource.datasource_id.in_(search_exclude['datasource_list']))
+        )
+        
+        query = query.filter(
+            exists(subquery.where(database.Conversation.conversation_id == database.conversation_datasource.c.conversation_id))
+        )
         
     total_count = query.count()
 
@@ -859,6 +982,22 @@ def update_conversation(conversation_id: str, conversation: models.ConversationU
         raise HTTPException(status_code=404, detail="Conversation not found")
     
     params_ex = conversation.model_dump(exclude_unset=True)
+    if 'datasources' in params_ex:
+        for datasource_id in params_ex['datasources']:
+            # Query for an embedding with "updated" status for the current datasource
+            updated_embedding = db.query(database.Embedding).filter(
+                database.Embedding.datasource_id == datasource_id,
+                database.Embedding.status == "updated",
+                database.db_comment_endpoint
+            ).first()
+
+            # Immediately raise an exception if no updated embedding is found
+            if not updated_embedding:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"No updated embedding found for datasource ID '{datasource_id}' '{db_conversation.conversation_title}'"
+                )
+    
 
     # 프롬프트 데이타가 있다면, 대화가 시작되었으면 중단한다.
     if 'prompt' in params_ex and len(params_ex['prompt']) > 0 :
@@ -870,8 +1009,8 @@ def update_conversation(conversation_id: str, conversation: models.ConversationU
     for key, value in params_ex.items():
         if key not in ["prompts", "tools","agents","datasources"]:
             setattr(db_conversation, key, value)
-    
-
+            
+    db.flush()
 
     """
     03. Proceed in the same way as the new creation logic
@@ -898,7 +1037,7 @@ def update_conversation(conversation_id: str, conversation: models.ConversationU
         for i, prompt in enumerate(params_ex['prompts']):
             db_prompt = db.query(database.Prompt).options(
                 joinedload(database.Prompt.promptMessage)
-            ).filter(database.db_comment_endpoint).filter(database.Prompt.prompt_id == prompt.prompt_id).first()
+            ).filter(database.db_comment_endpoint).filter(database.Prompt.prompt_id == prompt['prompt_id']).first()
             
             if db_prompt:
                 # Insert conversation_prompt
@@ -911,7 +1050,7 @@ def update_conversation(conversation_id: str, conversation: models.ConversationU
 
                 # variable
                 existing_variables = set()
-                for variable in prompt.variables:
+                for variable in prompt['variables']:
                     if variable.variable_name not in existing_variables:
                         db_variable = database.ConversationVariable(
                             conversation_id=db_conversation.conversation_id,

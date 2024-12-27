@@ -3,6 +3,7 @@ from datetime import datetime
 
 from ai_core.data_source.base import DataSourceType, create_data_source
 from ai_core.data_source.splitter import SplitterType, create_splitter
+from ai_core.data_source.utils.time_utils import get_iso_8601_current_time, iso_8601_str_to_datetime
 from ai_core.data_source.utils.utils import create_collection_name, split_texts
 from ai_core.data_source.vectorstore.search_type import Similarity
 from ai_core.llm_api_provider import LlmApiProvider
@@ -26,13 +27,16 @@ async def main():
     collection_name = create_collection_name(data_source.id, embedding_model_name)
     print("Collection name: ", collection_name)
 
+    last_update_succeeded_at = "2024-11-01T00:00:53.000+0900"
+
     # 2. 데이터 소스에 컬렉션 추가
     collection = data_source.add_collection(
         collection_name=collection_name,
         llm_api_provider=llm_api_provider,
         llm_api_key="ba3954fe-9cbb-4599-966b-20b04b5d3441",
         llm_api_url="https://aihub-api.sktelecom.com/aihub/v1/sandbox",
-        llm_embedding_model_name=embedding_model_name)
+        llm_embedding_model_name=embedding_model_name,
+        last_update_succeeded_at=iso_8601_str_to_datetime(last_update_succeeded_at))
 
     preview_start = datetime.now()
     preview_data = data_source.load_preview_data(
@@ -47,7 +51,7 @@ async def main():
     print("Data saved successfully")
 
     # 4. 데이터 임베딩 및 Vectorstore에 추가
-    documents = data_source.read_data()
+    documents = await data_source.read_data()
 
     splitter = create_splitter(SplitterType.RecursiveCharacterTextSplitter, chunk_size=2000, chunk_overlap=200)
     splitted_documents = split_texts(documents, splitter)
@@ -64,7 +68,9 @@ async def main():
             print("Embedding task failed: ", e)
             print("Update embedding state to failed")
 
-    embed_task = asyncio.create_task(collection.embed_documents_and_overwrite_to_vectorstore(documents=splitted_documents))
+    embed_task = asyncio.create_task(
+        collection.embed_documents_and_overwrite_to_vectorstore(documents=splitted_documents,
+                                                                last_update_succeeded_at=get_iso_8601_current_time()))
     embed_task.add_done_callback(embed_callback)
     print("Embedding task started")
 

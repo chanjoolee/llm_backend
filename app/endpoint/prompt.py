@@ -1,5 +1,7 @@
 from datetime import datetime
+import logging
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy.orm import Session , joinedload
 from sqlalchemy import or_ , insert , delete , select, text
 from typing import List
@@ -8,6 +10,9 @@ from app.database import SessionLocal, get_db
 from app.endpoint.login import cookie, SessionData, verifier
 import pydash
 import re
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 router = APIRouter()
 
@@ -334,3 +339,34 @@ def search_prompts(search: models.PromptSearch, db: Session = Depends(get_db), s
         joinedload(database.Prompt.promptMessage)
     ).all()
     return models.SearchPromptResponse(totalCount=total_count, list=prompts)
+
+
+
+
+class PromptNameRequest(BaseModel):
+    name: str
+
+@router.post(
+    "/prompts/check_name",
+    response_model=models.SearchPromptResponse,  # Adjust the response model to the correct one for prompts
+    dependencies=[Depends(cookie)],  # Adjust this dependency based on your authentication setup
+    description="""
+    지정된 이름을 가진 프롬프트가 존재하는지 확인합니다. 
+    결과로 일치하는 프롬프트의 목록과 총 개수를 반환합니다.
+    """
+)
+def check_prompt_name(request: PromptNameRequest, db: Session = Depends(get_db)):
+    """
+    지정된 이름을 가진 프롬프트가 존재하는지 확인하고, 결과를 리스트 형식으로 반환합니다.
+    """
+    query = db.query(database.Prompt).filter(
+        database.db_comment_endpoint ,
+        database.Prompt.prompt_title == request.name
+    )
+    total_count = query.count()
+    results = query.all()  # Fetch all matching records
+
+    return models.SearchPromptResponse(
+        totalCount=total_count,
+        list=results
+    )

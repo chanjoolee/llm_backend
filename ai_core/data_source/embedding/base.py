@@ -1,7 +1,7 @@
 from abc import abstractmethod
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SecretStr, ConfigDict
 
 import tiktoken
 from langchain_core.embeddings import Embeddings, DeterministicFakeEmbedding
@@ -60,17 +60,19 @@ class OpenAIEmbeddingModel(EmbeddingModel):
 
 
 class EmbeddingModelFactory(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     llm_api_provider: str
     llm_api_uri: str
     llm_api_key: str
-    supported_models: dict[str, list[Any]]
+    supported_models: dict = Field(default={})
     kwargs: dict = Field(default_factory=dict)
 
     def _create_openai_embeddings(self, llm_embedding_model_name: str, **kwargs):
         return OpenAIEmbeddings(
             openai_api_base=self.llm_api_uri,
             model=llm_embedding_model_name,
-            openai_api_key=self.llm_api_key,
+            openai_api_key=SecretStr(self.llm_api_key),
             **kwargs)
 
     def get_model(self, llm_embedding_model_name: str, **kwargs) -> EmbeddingModel:
@@ -98,11 +100,12 @@ class SmartBeeEmbeddingModelFactory(EmbeddingModelFactory):
     OpenAI 임베딩 모델의 이용 가격은 100만 토큰당 가격으로 계산됩니다.
     """
 
-    # model_name: model_provider, embedding_price, max_input_tokens, request_interval_sec
-    supported_models: dict[str, list[Any]] = {
-                        "text-embedding-3-small": [EmbeddingModelProvider.OPENAI, 0.02, 8191, 1],
-                        "text-embedding-3-large": [EmbeddingModelProvider.OPENAI, 0.13, 8191, 1],
-                        "text-embedding-ada-002": [EmbeddingModelProvider.OPENAI, 0.10, 8191, 1]}
+    def model_post_init(self, __context: Any):
+        # model_name: model_provider, embedding_price, max_input_tokens, request_interval_sec
+        self.supported_models = {
+                            "text-embedding-3-small": [EmbeddingModelProvider.OPENAI, 0.02, 8191, 1],
+                            "text-embedding-3-large": [EmbeddingModelProvider.OPENAI, 0.13, 8191, 1],
+                            "text-embedding-ada-002": [EmbeddingModelProvider.OPENAI, 0.10, 8191, 1]}
 
 
 class AzureEmbeddingModelFactory(EmbeddingModelFactory):
@@ -111,29 +114,32 @@ class AzureEmbeddingModelFactory(EmbeddingModelFactory):
         OpenAI 임베딩 모델의 이용 가격은 100만 토큰당 가격으로 계산됩니다.
     """
 
-    # model_name: model_provider, embedding_price, max_input_tokens, request_interval_sec
-    supported_models: dict[str, list[Any]] = {
-                        "text-embedding-3-small": [EmbeddingModelProvider.OPENAI, 0.02, 8191, 0],
-                        "text-embedding-3-large": [EmbeddingModelProvider.OPENAI, 0.13, 8191, 0],
-                        "text-embedding-ada-002": [EmbeddingModelProvider.OPENAI, 0.10, 8191, 0]}
+    def model_post_init(self, __context: Any):
+        # model_name: model_provider, embedding_price, max_input_tokens, request_interval_sec
+        self.supported_models = {
+                            "text-embedding-3-small": [EmbeddingModelProvider.OPENAI, 0.02, 8191, 0],
+                            "text-embedding-3-large": [EmbeddingModelProvider.OPENAI, 0.13, 8191, 0],
+                            "text-embedding-ada-002": [EmbeddingModelProvider.OPENAI, 0.10, 8191, 0]}
 
     def _create_openai_embeddings(self, llm_embedding_model_name: str, **kwargs):
         return AzureOpenAIEmbeddings(
             azure_endpoint=self.llm_api_url,
             model=llm_embedding_model_name,
-            openai_api_key=self.llm_api_key,
+            openai_api_key=SecretStr(self.llm_api_key),
             **kwargs)
 
 
 class FakeEmbeddingModelFactory(EmbeddingModelFactory):
-    # model_name: model_provider, embedding_price, max_input_tokens, request_interval_sec
-    supported_models: dict[str, list[Any]] = {
-                        "text-embedding-3-small": [EmbeddingModelProvider.OPENAI, 0.02, 8191, 0],
-                        "text-embedding-3-large": [EmbeddingModelProvider.OPENAI, 0.13, 8191, 0],
-                        "text-embedding-ada-002": [EmbeddingModelProvider.OPENAI, 0.10, 8191, 0]}
+
+    def model_post_init(self, __context: Any):
+        # model_name: model_provider, embedding_price, max_input_tokens, request_interval_sec
+        self.supported_models = {
+                            "text-embedding-3-small": [EmbeddingModelProvider.OPENAI, 0.02, 8191, 0],
+                            "text-embedding-3-large": [EmbeddingModelProvider.OPENAI, 0.13, 8191, 0],
+                            "text-embedding-ada-002": [EmbeddingModelProvider.OPENAI, 0.10, 8191, 0]}
 
     def _create_openai_embeddings(self, llm_embedding_model_name: str, **kwargs):
-        return DeterministicFakeEmbedding()
+        return DeterministicFakeEmbedding(size=kwargs.get("size", 768))
 
 
 class AIOneEmbeddingModelFactory(EmbeddingModelFactory):
@@ -142,11 +148,12 @@ class AIOneEmbeddingModelFactory(EmbeddingModelFactory):
     OpenAI 임베딩 모델의 이용 가격은 100만 토큰당 가격으로 계산됩니다.
     """
 
-    # model_name: model_provider, embedding_price, max_input_tokens, request_interval_sec
-    supported_models: dict[str, list[Any]] = {
-                        "text-embedding-3-small": [EmbeddingModelProvider.OPENAI, 0.02, 8191, 0],
-                        "text-embedding-3-large": [EmbeddingModelProvider.OPENAI, 0.13, 8191, 0],
-                        "text-embedding-ada-002": [EmbeddingModelProvider.OPENAI, 0.10, 8191, 0]}
+    def model_post_init(self, __context: Any):
+        # model_name: model_provider, embedding_price, max_input_tokens, request_interval_sec
+        supported_models = {
+                            "text-embedding-3-small": [EmbeddingModelProvider.OPENAI, 0.02, 8191, 0],
+                            "text-embedding-3-large": [EmbeddingModelProvider.OPENAI, 0.13, 8191, 0],
+                            "text-embedding-ada-002": [EmbeddingModelProvider.OPENAI, 0.10, 8191, 0]}
 
 
 def create_llm_embedding_model(
@@ -155,20 +162,28 @@ def create_llm_embedding_model(
         llm_api_key: str,
         llm_embedding_model_name: str,
         **kwargs) -> EmbeddingModel:
+
+    model_factory = create_llm_embedding_model_factory(llm_api_provider, llm_api_uri, llm_api_key, **kwargs)
+
+    return model_factory.get_model(llm_embedding_model_name)
+
+
+def create_llm_embedding_model_factory(llm_api_provider: str, llm_api_uri: str, llm_api_key: str, **kwargs):
     if llm_api_provider == LlmApiProvider.SMART_BEE.value:
         model_factory = SmartBeeEmbeddingModelFactory(
             llm_api_provider=llm_api_provider, llm_api_uri=llm_api_uri, llm_api_key=llm_api_key, **kwargs)
     elif llm_api_provider == LlmApiProvider.AZURE.value:
         model_factory = AzureEmbeddingModelFactory(
-            llm_api_provider=llm_api_provider, llm_api_uri=llm_api_uri, llm_api_key=llm_api_key, **kwargs)
+        llm_api_provider=llm_api_provider, llm_api_uri=llm_api_uri, llm_api_key=llm_api_key, **kwargs)
     elif llm_api_provider == LlmApiProvider.AI_ONE.value:
+        # AI One은 context length 체크 과정에서 에러가 발생한다. API가 업데이트되었을 수 있으므로 시간이 지났을 때 다시 테스트해보자.
+        kwargs["check_embedding_ctx_length"] = False
         model_factory = AIOneEmbeddingModelFactory(
-            llm_api_provider=llm_api_provider, llm_api_uri=llm_api_uri, llm_api_key=llm_api_key,
-            check_embedding_ctx_length=False, **kwargs)
+        llm_api_provider=llm_api_provider, llm_api_uri=llm_api_uri, llm_api_key=llm_api_key, **kwargs)
     elif llm_api_provider == LlmApiProvider.TEST.value:
         model_factory = FakeEmbeddingModelFactory(
-            llm_api_provider=llm_api_provider, llm_api_uri=llm_api_uri, llm_api_key=llm_api_key, **kwargs)
+        llm_api_provider=llm_api_provider, llm_api_uri=llm_api_uri, llm_api_key=llm_api_key, **kwargs)
     else:
         raise ValueError(f"Unsupported llm_api_provider: {llm_api_provider}")
 
-    return model_factory.get_model(llm_embedding_model_name)
+    return model_factory

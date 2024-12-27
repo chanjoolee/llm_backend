@@ -1,3 +1,4 @@
+import logging
 from fastapi import FastAPI, Depends, HTTPException
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -11,6 +12,10 @@ from uuid import UUID, uuid4
 from app.endpoint.login import cookie , SessionData , verifier
 from passlib.context import CryptContext
 from app.utils.utils import pwd_context , hash_password ,  verify_password
+
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 router = APIRouter()
 # app = FastAPI()

@@ -1,11 +1,16 @@
+import logging
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import insert, or_, text
+from pydantic import BaseModel
+from sqlalchemy import exists, insert, or_, select, text
 from sqlalchemy.orm import Session
 from app import models, database
 from app.utils import utils
 from app.endpoint.login import cookie , SessionData , verifier
 from app.database import SessionLocal, get_db
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 router = APIRouter()
 
@@ -292,55 +297,29 @@ def delete_agent(
     
     return deleted_data
 
-
-@router.post(
-    "/search_agents",
-    response_model=models.SearchAgentsResponse,
-    dependencies=[Depends(cookie)],
-    tags=["Agents"],
-    description="""<pre>
-    Searches for agents based on various criteria.
-    <h3>Request Body:</h3>
-        - search_words (Optional[str]): Words to search for in names and descriptions.
-        - search_range_list (Optional[List[str]]): List of fields to search within (e.g., 'name', 'description').
-        - visibility_list (Optional[List[str]]): List of visibility types to filter by (e.g., 'public','private').
-        - component_list (Optional[List[int]]): List of components to filter by.
-        - tag_list (Optional[List[int]]): List of tags to filter by.
-        - user_list (Optional[List[str]]): List of users to filter by.
-        - llm_api_list (Optional[List[int]]): List of LLM APIs to filter by.
-        - llm_model_list (Optional[List[str]]): List of LLM models to filter by.
-        - skip (Optional[int]): The number of records to skip for pagination.
-        - limit (Optional[int]): The maximum number of records to return for pagination.
-    </pre>
-    """
-)
-def search_agents(
-    search: models.AgentSearch,
-    db: Session = Depends(get_db),
-    session_data: SessionData = Depends(verifier)
-):
+"""
+개인만이 조회하는 경우가 있고 전체를 조회하는 경우가 있음.
+공통적으로 사용해야 하는 Function 이 필요함.
+"""
+def search_agent_basic(db, search_exclude):
     query = db.query(database.Agent).filter(database.db_comment_endpoint)
-    
-    search_exclude = search.dict(exclude_unset=True)
-
     if 'search_words' in search_exclude and search_exclude['search_words']:
-        if 'name' in search_exclude['search_range_list']:
-            query = query.filter(database.Agent.name.like(f'%{search_exclude["search_words"]}%'))
+        search_filter_word = []
+        if 'title' in search_exclude['search_range_list']:
+            filter_title = (database.Agent.name.like(f'%{search_exclude["search_words"]}%'))
+            search_filter_word.append(filter_title)
         if 'description' in search_exclude['search_range_list']:
-            query = query.filter(database.Agent.description.like(f'%{search_exclude["search_words"]}%'))
-
+            filter_description = (database.Agent.description.like(f'%{search_exclude["search_words"]}%'))
+            search_filter_word.append(filter_description)
+        if len(search_filter_word) > 0 :
+            query = query.filter(or_(*search_filter_word))
+            
     if 'visibility_list' in search_exclude and search_exclude['visibility_list']:
         query = query.filter(database.Agent.visibility.in_(search_exclude['visibility_list']))
 
     if 'tag_list' in search_exclude and search_exclude['tag_list']:
         query = query.join(database.agent_tags).filter(database.agent_tags.c.tag_id.in_(search_exclude['tag_list']))
-
-    # 사용자 필터링
-    user_filter_basic = [
-        database.Agent.create_user == session_data.user_id ,
-        database.Agent.visibility == 'public'
-    ]
-    query = query.filter(or_(*user_filter_basic))
+    
     if 'user_list' in search_exclude and len(search_exclude['user_list']) > 0:
         query = query.filter(database.Agent.create_user .in_(search_exclude['user_list']))
 
@@ -349,10 +328,127 @@ def search_agents(
 
     if 'llm_model_list' in search_exclude and search_exclude['llm_model_list']:
         query = query.filter(database.Agent.llm_model.in_(search_exclude['llm_model_list']))
+    
+    if 'prompt_list' in search_exclude and len(search_exclude['prompt_list']) > 0:
+        subquery = (
+            select(database.agent_prompts.c.agent_id)
+            .join(database.Prompt, database.Prompt.prompt_id == database.agent_prompts.c.prompt_id)
+            .filter(database.Prompt.prompt_id.in_(search_exclude['prompt_list']))
+        )
+        
+        query = query.filter(
+            exists(subquery.where(database.Agent.agent_id == database.agent_prompts.c.agent_id))
+        )
+     
+    if 'tool_list' in search_exclude and len(search_exclude['tool_list']) > 0:
+        subquery = (
+            select(database.agent_tools.c.tool_id)
+            .join(database.Tool, database.Tool.tool_id == database.agent_tools.c.tool_id)
+            .filter(database.Tool.tool_id.in_(search_exclude['tool_list']))
+        )
+        
+        query = query.filter(
+            exists(subquery.where(database.Agent.agent_id == database.agent_tools.c.agent_id))
+        )
+               
+    if 'datasource_list' in search_exclude and len(search_exclude['datasource_list']) > 0:
+        subquery = (
+            select(database.agent_datasource.c.agent_id)
+            .join(database.DataSource, database.DataSource.datasource_id == database.agent_datasource.c.datasource_id)
+            .filter(database.DataSource.datasource_id.in_(search_exclude['datasource_list']))
+        )
+        
+        query = query.filter(
+            exists(subquery.where(database.Agent.agent_id == database.agent_datasource.c.agent_id))
+        )
+        
+    filter_component = []  
+    if 'component_list' in search_exclude and len(search_exclude['component_list'])> 0 : 
+        for component in search_exclude['component_list']:
+            if component['type'] == 'prompt':
+                subquery = (
+                    select(database.agent_prompts.c.agent_id)
+                    .join(database.Prompt, database.Prompt.prompt_id == database.agent_prompts.c.prompt_id)
+                    .filter(database.Prompt.prompt_id  == component['id']))
+                filter_component.append(
+                    exists(subquery.where(database.Agent.agent_id == database.agent_prompts.c.agent_id))
+                )
+            if component['type'] == 'tool':
+                subquery = (
+                    select(database.agent_tools.c.agent_id)
+                    .join(database.Tool, database.Tool.tool_id == database.agent_tools.c.tool_id)
+                    .filter(database.Tool.tool_id  == component['id']))
+                filter_component.append(
+                    exists(subquery.where(database.Agent.agent_id == database.agent_tools.c.agent_id))
+                )
+                
+            # 하위에이전트
+            if component['type'] == 'agent':
+                subquery = (
+                    select(database.Agent.agent_id)
+                    .filter(database.Agent.parent_agent_id == component['id'])
+                )
+                filter_component.append(
+                    exists(subquery.where(database.Agent.agent_id == database.Agent.agent_id))
+                )
+            
+            if component['type'] == 'datasource':
+                subquery = (
+                    select(database.agent_datasource.c.agent_id)
+                    .join(database.DataSource, database.DataSource.datasource_id == database.agent_datasource.c.datasource_id)
+                    .filter(database.DataSource.datasource_id == component['id'])
+                )
+                filter_component.append(
+                    exists(subquery.where(database.Agent.agent_id == database.agent_datasource.c.agent_id))
+                )
+    query = query.filter(or_(*filter_component))    
 
+    return query
+
+
+
+@router.post(
+    "/search_agents",
+    response_model=models.SearchAgentsResponse,
+    dependencies=[Depends(cookie)],
+    tags=["Agents"],
+    description=
+    """
+    ***Searches for agents based on various criteria.***<br/><br/>
+    **Request Body**<br/>
+        - **search_words (Optional[str])**: Words to search for in names and descriptions.<br/>
+        - **search_range_list (Optional[List[str]])**: List of fields to search within (e.g., 'name', 'description').<br/>
+        - **visibility_list (Optional[List[str]])**: List of visibility types to filter by (e.g., 'public','private').<br/>
+        - **component_list (Optional[List[int]])**: List of components to filter by.<br/>
+        - **tag_list (Optional[List[int]])**: List of tags to filter by.<br/>
+        - **user_list (Optional[List[str]])**: List of users to filter by.<br/>
+        - **llm_api_list (Optional[List[int]])**: List of LLM APIs to filter by.<br/>
+        - **llm_model_list (Optional[List[str]])**: List of LLM models to filter by.<br/>
+        - **prompt_list : Optional[List[int]]**: List of prompt to filter.<br/>
+        - **tool_list : Optional[List[int]]**: List of tool to filter.<br/>
+        - **datasource_list : Optional[List[str]]**: List of datasource to filter.<br/>
+        - **skip (Optional[int])**: The number of records to skip for pagination.<br/>
+        - **limit (Optional[int])**: The maximum number of records to return for pagination.
+    """
+)
+def search_agents(
+    search: models.AgentSearch,
+    db: Session = Depends(get_db),
+    session_data: SessionData = Depends(verifier)
+):
+    search_exclude = search.dict(exclude_unset=True)
+    
+    query = search_agent_basic(db, search_exclude)
+    
+    # 사용자 필터링
+    user_filter_basic = [
+        database.Agent.create_user == session_data.user_id ,
+        database.Agent.visibility == 'public'
+    ]
+    query = query.filter(or_(*user_filter_basic))
     total_count = query.count()
 
-    query = query.order_by(database.Agent.updated_at.desc())
+    query = query.order_by(database.Agent.updated_at.desc(),database.Agent.created_at.desc())
     if 'skip' in search_exclude and 'limit' in search_exclude:
         query = query.offset(search_exclude['skip']).limit(search_exclude['limit'])
 
@@ -361,4 +457,76 @@ def search_agents(
     return models.SearchAgentsResponse(totalCount=total_count, list=agents)
 
 
+@router.post(
+    "/search_agents_all",
+    response_model=models.SearchAgentsResponse,
+    dependencies=[Depends(cookie)],
+    tags=["Agents"],
+    description=
+    """
+    ***개인권한과 관련이 없는 모든 Agent를 검색한다.***<br/><br/>
+    **Request Body**<br/>
+        - **search_words (Optional[str])**: Words to search for in names and descriptions.<br/>
+        - **search_range_list (Optional[List[str]])**: List of fields to search within (e.g., 'name', 'description').<br/>
+        - **visibility_list (Optional[List[str]])**: List of visibility types to filter by (e.g., 'public','private').<br/>
+        - **component_list (Optional[List[int]])**: List of components to filter by.<br/>
+        - **tag_list (Optional[List[int]])**: List of tags to filter by.<br/>
+        - **user_list (Optional[List[str]])**: List of users to filter by.<br/>
+        - **llm_api_list (Optional[List[int]])**: List of LLM APIs to filter by.<br/>
+        - **llm_model_list (Optional[List[str]])**: List of LLM models to filter by.<br/>
+        - **prompt_list : Optional[List[int]]**: List of prompt to filter.<br/>
+        - **tool_list : Optional[List[int]]**: List of tool to filter.<br/>
+        - **datasource_list : Optional[List[str]]**: List of datasource to filter.<br/>
+        - **skip (Optional[int])**: The number of records to skip for pagination.<br/>
+        - **limit (Optional[int])**: The maximum number of records to return for pagination.
+    """
+)
+def search_agents_all(
+    search: models.AgentSearch,
+    db: Session = Depends(get_db),
+    session_data: SessionData = Depends(verifier)
+):
+    search_exclude = search.dict(exclude_unset=True)
+    
+    query = search_agent_basic(db, search_exclude)
+    
+    total_count = query.count()
+
+    query = query.order_by(database.Agent.updated_at.desc(),database.Agent.created_at.desc())
+    if 'skip' in search_exclude and 'limit' in search_exclude:
+        query = query.offset(search_exclude['skip']).limit(search_exclude['limit'])
+
+    agents = query.all()
+
+    return models.SearchAgentsResponse(totalCount=total_count, list=agents)
+
+
+class AgentNameRequest(BaseModel):
+    name: str
+
+@router.post(
+    "/check_name",
+    response_model=models.SearchAgentsResponse,  # Adjust the response model to the correct one for agents
+    dependencies=[Depends(cookie)],  # Adjust this dependency based on your authentication setup
+    tags=["Agents"],
+    description="""
+    지정된 이름을 가진 에이전트가 존재하는지 확인합니다. 
+    결과로 일치하는 에이전트의 목록과 총 개수를 반환합니다.
+    """
+)
+def check_agent_name(request: AgentNameRequest, db: Session = Depends(get_db)):
+    """
+    지정된 이름을 가진 에이전트가 존재하는지 확인하고, 결과를 리스트 형식으로 반환합니다.
+    """
+    query = db.query(database.Agent).filter(
+        database.db_comment_endpoint ,
+        database.Agent.name == request.name
+    )
+    total_count = query.count()
+    results = query.all()  # Fetch all matching records
+
+    return models.SearchAgentsResponse(
+        totalCount=total_count,
+        list=results
+    )
 

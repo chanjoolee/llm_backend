@@ -6,7 +6,7 @@ from atlassian import Jira
 from ai_core.data_source.utils.utils import safe_get, clean_json_string
 
 
-def filter_required_fields(issue_fields: dict):
+def filter_required_fields(issue: dict):
     required_fields = [
         "summary",
         "fixVersions",
@@ -29,12 +29,18 @@ def filter_required_fields(issue_fields: dict):
         "assignee"
     ]
 
-    return {field: issue_fields[field] for field in required_fields if field in issue_fields}
+    fields = issue["fields"]
+    key = issue["key"]
+
+    required_fields = {field: fields[field] for field in required_fields if field in fields}
+
+    return {"key": key, **required_fields}
 
 
 def cleanse_fields(fields: dict):
     result = {}
 
+    result["key"] = safe_get(fields, "key", None)
     result["summary"] = safe_get(fields, "summary", "")
 
     assignee = safe_get(fields, "assignee", {})
@@ -84,9 +90,7 @@ def search_issues(url: str, project_key: str, access_token: str, assignee: str, 
     issues = jira.jql(f"project = {project_key} AND assignee = {assignee} AND updated >= {start_date} AND updated <= {end_date}")
 
     for issue in issues.get("issues", []):
-        required_fields = filter_required_fields(issue["fields"])
+        required_fields = filter_required_fields(issue)
         cleaned_fields = cleanse_fields(required_fields)
-        cleaned_fields["key"] = issue["key"]
-        key = {"key": issue["key"]}
 
-        yield json.dumps({**key, **cleaned_fields}, indent=2, ensure_ascii=False)
+        yield json.dumps(cleaned_fields, indent=2, ensure_ascii=False)

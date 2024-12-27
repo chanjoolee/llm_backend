@@ -1,5 +1,7 @@
+import logging
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException , Query
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import or_, text
 from app.endpoint.login import cookie , SessionData , verifier
@@ -8,6 +10,8 @@ from app import models, database
 from app.database import SessionLocal, get_db
 import pydash
 
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 router = APIRouter()
 
@@ -35,7 +39,7 @@ def create_tag(tag: models.TagCreate, db: Session = Depends(get_db),session_data
 
 @router.get(
     "/",
-    response_model=List[models.Tag],
+    response_model=models.SearchTagResponse,
     dependencies=[Depends(cookie)],
     # tags=["Tags"],
     description="""
@@ -51,10 +55,15 @@ def read_tags(skip: Optional[int] = 0, limit: Optional[int] = 10, db: Session = 
     comment = text("/* is_endpoint_query */ 1=1")
     query = query.filter(comment) 
     
+    total_count = query.count()
+    query = query.order_by(database.Tag.updated_at.desc(),database.Tag.created_at.desc())
     if skip is not None  and limit is not None :
         query = query.offset(skip).limit(limit)
+        
+    results = query.all()
     tags =query.all()
-    return tags
+    
+    return models.SearchTagResponse(totalCount=total_count, list=results)
 
 @router.get(
     "/{tag_id}",
@@ -148,7 +157,7 @@ def delete_multiple_tags(tag_delete:models.TagDelete , db: Session = Depends(get
 
 @router.post(
     "/search",
-    response_model=List[models.Tag],
+    response_model=models.SearchTagResponse,
     dependencies=[Depends(cookie)],
     # tags=["LLM APIs"],
     description="""
@@ -163,14 +172,50 @@ def search_tags(
     db: Session = Depends(get_db),
     session_data: SessionData = Depends(verifier)
 ):
+    search_exclude = search.dict(exclude_unset=True)
+    
     query = db.query(database.Tag)
     comment = text("/* is_endpoint_query */ 1=1")
     query = query.filter(comment) 
     
-    if not pydash.is_empty(search.search_words) and not pydash.is_empty(search.search_words):
-        query = query.filter(database.Tag.name.ilike(f"%{search.search_words}%"))
+    if 'search_words' in search_exclude and search_exclude['search_words']:
+        query = query.filter(database.Tag.name.ilike(f"%{search_exclude["search_words"]}%"))
     
-    if search.skip is not None  and search.limit is not None :
-        query = query.offset(search.skip).limit(search.limit)
+    total_count = query.count()
+    query = query.order_by(database.Tag.updated_at.desc(),database.Tag.created_at.desc())
+    if 'skip' in search_exclude and 'limit' in search_exclude:
+        query = query.offset(search_exclude['skip']).limit(search_exclude['limit'])
+    
     results = query.all()
-    return results
+    
+    return models.SearchTagResponse(totalCount=total_count, list=results)
+
+
+
+class TagNameRequest(BaseModel):
+    name: str
+
+@router.post(
+    "/check_name",
+    response_model=models.SearchTagResponse,  # Adjust the response model to the correct one for tags
+    dependencies=[Depends(cookie)],  # Adjust this dependency based on your authentication setup
+    description="""
+    지정된 이름을 가진 태그가 존재하는지 확인합니다. 
+    결과로 일치하는 태그의 목록과 총 개수를 반환합니다.
+    """
+)
+def check_tag_name(request: TagNameRequest, db: Session = Depends(get_db)):
+    """
+    지정된 이름을 가진 태그가 존재하는지 확인하고, 결과를 리스트 형식으로 반환합니다.
+    """
+    query = db.query(database.Tag).filter(
+        database.db_comment_endpoint ,
+        database.Tag.name == request.name
+    )
+    total_count = query.count()
+    results = query.all()  # Fetch all matching records
+
+    return models.SearchTagResponse(
+        totalCount=total_count,
+        list=results
+    )

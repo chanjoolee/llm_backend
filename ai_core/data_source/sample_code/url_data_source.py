@@ -5,6 +5,7 @@ from typing import AsyncIterable
 from ai_core.data_source.base import DataSourceType, create_data_source
 from ai_core.data_source.model.document import Document
 from ai_core.data_source.splitter import create_splitter, SplitterType
+from ai_core.data_source.utils.time_utils import get_iso_8601_current_time
 from ai_core.data_source.utils.utils import create_collection_name, split_texts
 from ai_core.data_source.vectorstore.search_type import Similarity
 from ai_core.llm_api_provider import LlmApiProvider
@@ -44,16 +45,19 @@ async def main():
     print("Preview data loaded in ", str(preview_end - preview_start))
 
     # 3. 데이터를 Opensearch에 저장
-    data_source.save_data(url=url, base_url=base_url, max_depth=max_depth)
+    data_source.save_data(last_update_succeeded_at=get_iso_8601_current_time(),
+                          url=url, base_url=base_url, max_depth=max_depth)
 
     print("Data saved successfully")
 
     # 4. 데이터 임베딩 및 Vectorstore에 추가
-    data = data_source.read_data()
+    data = await data_source.read_data()
     splitter = create_splitter(SplitterType.RecursiveCharacterTextSplitter, chunk_size=1000, chunk_overlap=100)
     splitted_documents: AsyncIterable[Document] = split_texts(data, splitter)
 
-    embed_task = asyncio.create_task(collection.embed_documents_and_overwrite_to_vectorstore(documents=splitted_documents))
+    embed_task = asyncio.create_task(
+        collection.embed_documents_and_overwrite_to_vectorstore(documents=splitted_documents,
+                                                                last_update_succeeded_at=get_iso_8601_current_time()))
     print("Embedding task started")
 
     def embed_callback(future):

@@ -2,6 +2,7 @@ import asyncio
 from datetime import datetime
 
 from ai_core.data_source.base import DataSourceType, create_data_source
+from ai_core.data_source.utils.time_utils import get_iso_8601_current_time, iso_8601_str_to_datetime
 from ai_core.data_source.utils.utils import create_collection_name
 from ai_core.data_source.vectorstore.search_type import Similarity
 from ai_core.llm_api_provider import LlmApiProvider
@@ -14,6 +15,8 @@ async def main():
     private_token = "tde2-4frDqjSRER4DBGGDzwwY"
     opensearch_hosts = 'localhost:9200'
     opensearch_auth = ('admin', 'Skapfhd3122!@') # For testing only. Don't store credentials in code.
+
+    last_update_succeeded_at = "2024-11-01T00:00:53.000+0900"
 
     # 1. 데이터 소스 생성
     data_source = create_data_source(
@@ -33,14 +36,16 @@ async def main():
         llm_api_provider=LlmApiProvider.SMART_BEE.value,
         llm_api_key="ba3954fe-9cbb-4599-966b-20b04b5d3441",
         llm_api_url="https://aihub-api.sktelecom.com/aihub/v1/sandbox",
-        llm_embedding_model_name="text-embedding-3-large")
+        llm_embedding_model_name="text-embedding-3-large",
+        last_update_succeeded_at=iso_8601_str_to_datetime(last_update_succeeded_at))
 
     # 3. 데이터를 텍스트 파일로 저장
-    data_source.save_data(url=url, namespace=namespace, project_name=project_name, private_token=private_token)
+    data_source.save_data(last_update_succeeded_at=get_iso_8601_current_time(),
+                          url=url, namespace=namespace, project_name=project_name, private_token=private_token)
     print("Data saved successfully")
 
     # 4. 데이터 임베딩 및 Vectorstore에 추가
-    data = data_source.read_data()
+    data = await data_source.read_data()
 
     def embed_callback(future):
         try:
@@ -54,7 +59,9 @@ async def main():
             print("Embedding task failed: ", e)
             print("Update embedding state to failed")
 
-    embed_task = asyncio.create_task(collection.embed_documents_and_overwrite_to_vectorstore(texts=data))
+    embed_task = asyncio.create_task(
+        collection.embed_documents_and_overwrite_to_vectorstore(documents=data,
+                                                                last_update_succeeded_at=get_iso_8601_current_time()))
     embed_task.add_done_callback(embed_callback)
     print("Embedding task started")
 

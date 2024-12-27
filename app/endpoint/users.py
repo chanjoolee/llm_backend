@@ -1,3 +1,4 @@
+import logging
 from fastapi import FastAPI, Depends, HTTPException , Path, Query , Response
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -9,9 +10,14 @@ from app import models, database
 from fastapi import APIRouter
 from uuid import UUID, uuid4
 from app.endpoint.login import cookie , SessionData , verifier
+from app.endpoint import sendMail
 from passlib.context import CryptContext
-from app.utils.utils import pwd_context , hash_password ,  verify_password
+from app.utils import utils 
 import pydash
+
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 router = APIRouter()
 # app = FastAPI()
@@ -19,10 +25,10 @@ router = APIRouter()
 
 
 # CRUD operations for Users
-@router.post("/users", response_model=User, tags=["Users"])
+@router.post("/users", response_model=User)
 def create_user(user: UserCreate, db: Session = Depends(get_db) ):
     # hashed_password = pwd_context.hash(user.password.get_secret_value())
-    hashed_password = hash_password(user.password.get_secret_value())
+    hashed_password = utils.hash_password(user.password.get_secret_value())
     db_user = database.User(
         user_id=user.user_id, 
         password=hashed_password,  
@@ -34,21 +40,21 @@ def create_user(user: UserCreate, db: Session = Depends(get_db) ):
     db.refresh(db_user)
     return db_user
 
-@router.get("/users/{user_id}", response_model=User, description='특정 사용자를 검색한다.' , tags=["Users"])
+@router.get("/users/{user_id}", response_model=User, description='특정 사용자를 검색한다.' )
 def read_user(user_id: str = Path(..., description='검색할사용자ID'), db: Session = Depends(get_db)  ):
     db_user = db.query(database.User).filter(database.db_comment_endpoint).filter(database.User.user_id == user_id).first()
     if db_user is None:
         raise HTTPException(status_code=404, detail="User not found")
     return db_user
 
-@router.get("/users/nickname/{nickname}", response_model=User ,tags=["Users"])
+@router.get("/users/nickname/{nickname}", response_model=User)
 def read_nickname(nickname: str, db: Session = Depends(get_db) ):
     db_user = db.query(database.User).filter(database.db_comment_endpoint).filter(database.User.nickname == nickname).first()
     if db_user is None:
         raise HTTPException(status_code=404, detail="NickName not found")
     return db_user
 
-@router.get("/read_all_users", response_model=List[User], dependencies=[Depends(cookie)],tags=["Users"])
+@router.get("/read_all_users", response_model=List[User], dependencies=[Depends(cookie)])
 def read_all_users(db: Session = Depends(get_db) ,session_data: SessionData = Depends(verifier)):
 
     query = db.query(database.User)
@@ -76,7 +82,6 @@ def read_all_users(db: Session = Depends(get_db) ,session_data: SessionData = De
         offset, limit
 </pre>''', 
     dependencies=[Depends(cookie)], 
-    tags=["Users"]
 )
 def search_users(search: models.UserSearch, db: Session = Depends(get_db), session_data: SessionData = Depends(verifier)):
     query = db.query(database.User)
@@ -109,9 +114,14 @@ def search_users(search: models.UserSearch, db: Session = Depends(get_db), sessi
 @router.put(
     "/users/{user_id}", 
     response_model=User, 
-    # dependencies=[Depends(cookie)],
-    tags=["Users"])
-def update_user(user_id: str, user: UserUpdate, db: Session = Depends(get_db) ,session_data: SessionData = Depends(verifier)):
+    dependencies=[Depends(cookie)]
+)
+def update_user(
+    user_id: str, 
+    user: UserUpdate, 
+    db: Session = Depends(get_db) ,
+    session_data: SessionData = Depends(verifier)
+):
     db_user = db.query(database.User).filter(database.db_comment_endpoint).filter(database.User.user_id == user_id).first()
     if db_user is None:
         raise HTTPException(status_code=404, detail="User not found")
@@ -121,7 +131,7 @@ def update_user(user_id: str, user: UserUpdate, db: Session = Depends(get_db) ,s
     update_data = user.model_dump(exclude_unset=True)
     for key, value in update_data.items():
         if key == "password":
-            hashed_password = hash_password(value.get_secret_value())
+            hashed_password = utils.hash_password(value.get_secret_value())
             setattr(db_user, key, hashed_password)
         else:
             setattr(db_user, key, value)
@@ -148,7 +158,6 @@ def update_user(user_id: str, user: UserUpdate, db: Session = Depends(get_db) ,s
 
 </pre>''', 
     dependencies=[Depends(cookie)], 
-    tags=["Users"]
 )
 def update_user_role(users: models.UserRoleUpdates ,db: Session = Depends(get_db), session_data: SessionData = Depends(verifier)):
     updated_users = []
@@ -160,7 +169,7 @@ def update_user_role(users: models.UserRoleUpdates ,db: Session = Depends(get_db
             update_data = user_update.dict(exclude_unset=True)
             for key, value in update_data.items():
                 if key == "password":
-                    hashed_password = hash_password(value.get_secret_value())
+                    hashed_password = utils.hash_password(value.get_secret_value())
                     setattr(db_user, key, hashed_password)
                 else:
                     setattr(db_user, key, value)
@@ -184,7 +193,7 @@ async def compare_password(user: models.UserLogin, response: Response, db: Sessi
     ).filter(database.db_comment_endpoint).first()
 
     # Check if the user exists and verify the password
-    if db_user is None or not verify_password(user.password.get_secret_value(), db_user.password):
+    if db_user is None or not utils.verify_password(user.password.get_secret_value(), db_user.password):
         raise HTTPException(status_code=401, detail="Invalid user_id or password")
     
     # return f"created session for {user_id}"
@@ -208,7 +217,6 @@ def delete_user(user_id: str, db: Session = Depends(get_db) ,session_data: Sessi
     "/user/{user_id}/tokens", 
     response_model=User, 
     dependencies=[Depends(cookie)],
-    tags=["Users"],
     description="""
     <pre>
     <h3>Request Body:</h3>
@@ -238,3 +246,49 @@ def update_user_tokens(
     db.refresh(user)
     
     return user
+
+
+@router.put(
+    "/users/password_init/{user_id}",
+    # dependencies=[Depends(cookie)],
+    description="""
+    비밀번호 초기화
+    
+    사용자아이디(user_id) 로 발송됨.
+    사용자아이디가 정확한 email 이어야 함.
+    
+    내부발송
+        sk.com메일도메인은SKT 내부구성원메일발송시에만사용하며, 
+        수신자메일주소가외부메일일경우발송불가
+        ex) mgs@sk.com(발신자메일주소) -> xxxxxxxxx@sk.com(수신자메일주소)
+    외부발송
+        메일도메인을sktelecom.com으로지정후메일발송
+        ex) mgs@sktelecom.com(발신자메일주소) -> xxxxxx@naver.com(수신자메일주소)
+    """
+)
+async def password_init(
+    user_id: str, 
+    db: Session = Depends(get_db)
+):
+    logger.info("Start Password initialize")
+    db_user = db.query(database.User).filter(database.db_comment_endpoint).filter(database.User.user_id == user_id).first()
+    if db_user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    init_password = "Sktelecom1!"
+    init_password = utils.generate_random_password()
+    db_user.password = utils.hash_password(init_password)
+    
+    mail_data = models.EmailRequest(
+        receiver_email=user_id,
+        subject="Password for daisy is initialized",
+        content=f"intialized password is  {init_password}"
+    )
+    
+    logger.info(f"mail data : {mail_data}")
+    
+    mail_response = await sendMail.send_email(email_request=mail_data)
+    
+    return {
+        "message": f"Password is initialized. Please confirm email {user_id} "
+    }

@@ -1,3 +1,4 @@
+import logging
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field
@@ -5,6 +6,10 @@ from typing import List, Optional
 from app.database import SessionLocal, get_db
 from app import models, database
 from sqlalchemy import func , text , select , exists
+
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 router = APIRouter()
 

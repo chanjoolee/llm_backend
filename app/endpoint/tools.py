@@ -1,5 +1,7 @@
+import logging
 from urllib.parse import quote
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 import pydash
 from sqlalchemy.orm import Session , joinedload
 from sqlalchemy import insert, delete, or_, text
@@ -14,6 +16,9 @@ from app.endpoint.login import cookie, SessionData, verifier
 import tempfile
 import shutil
 import requests
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 router = APIRouter()
 
@@ -581,7 +586,7 @@ def search_tools(
     # 사용자 End
     
     total_count = query.count()
-    query = query.order_by(database.Tool.created_at.desc())   
+    query = query.order_by(database.Tool.updated_at.desc(), database.Tool.created_at.desc())   
     # Pagination
     if 'skip' in search_exclude and 'limit' in search_exclude:
         query = query.offset(search_exclude['skip']).limit(search_exclude['limit'])
@@ -592,3 +597,33 @@ def search_tools(
     tools = query.all()
 
     return models.SearchToolsResponse(totalCount=total_count, list=tools)
+
+
+
+class ToolNameRequest(BaseModel):
+    name: str
+
+@router.post(
+    "/tools/check_name",
+    response_model=models.SearchToolsResponse,  # Adjust the response model to the correct one for tools
+    dependencies=[Depends(cookie)],  # Adjust this dependency based on your authentication setup
+    description="""
+    지정된 이름을 가진 도구가 존재하는지 확인합니다. 
+    결과로 일치하는 도구의 목록과 총 개수를 반환합니다.
+    """
+)
+def check_tool_name(request: ToolNameRequest, db: Session = Depends(get_db)):
+    """
+    지정된 이름을 가진 도구가 존재하는지 확인하고, 결과를 리스트 형식으로 반환합니다.
+    """
+    query = db.query(database.Tool).filter(
+        database.db_comment_endpoint ,
+        database.Tool.name == request.name
+    )
+    total_count = query.count()
+    results = query.all()  # Fetch all matching records
+
+    return models.SearchToolsResponse(
+        totalCount=total_count,
+        list=results
+    )

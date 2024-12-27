@@ -28,6 +28,21 @@ async def test_tool_call(smart_bee_conversation: Conversation, conversation_id, 
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("conversation_id, smart_bee_model", [("test1", "smart_bee_gpt_4o"),])
+async def test_send_message(smart_bee_conversation: Conversation, conversation_id, smart_bee_model):
+    smart_bee_conversation.add_tool("send_message_to_daisy_channel", "egnarts", './send_message_to_daisy_channel.py')
+    try:
+        await smart_bee_conversation.create_agent(debug=False)
+        await smart_bee_conversation.clear(conversation_id)
+        messages = []
+        async for m in smart_bee_conversation.invoke(conversation_id, "테스트 메시지"):
+            print(m)
+            messages.append(m)
+    finally:
+        await smart_bee_conversation.close_connection_pools()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("conversation_id, ai_one_model", [("test1", "ai_one_claude"),])
 async def test_tool_call_streaming(ai_one_conversation: Conversation, conversation_id, ai_one_model):
     ai_one_conversation.add_tool("add", "egnarts", './add.py')

@@ -12,6 +12,7 @@ import pymysql
 from .endpoint.utils import router as utils_router
 from .endpoint.commonCode import router as cmmcode_router
 from .endpoint.users import router as user_router
+from .endpoint.usersAlert import router as userAlert_router
 from .endpoint.messages import router as message_router
 from .endpoint.messages_system import router as message_system_router
 from .endpoint.conversations import router as conversation_router
@@ -25,6 +26,7 @@ from .endpoint.prompt import router as prompt_router
 from .endpoint.tools import router as tool_router
 from .endpoint.datasource import router as datasource_router
 from .endpoint.dashboard import router as dashbord_router
+from .endpoint.sendMail import router as sendmail_route
 from .endpoint import realtime_updates
 # from .endpoint.conversationPrompt import router as conversationPrompt_router
 from .database import SessionLocal, engine, Base, User, Conversation, Message
@@ -45,6 +47,12 @@ import sqlparse
 from fastapi.staticfiles import StaticFiles
 from ai_core.checkpoint.mysql_saver import MySQLSaver
 from sqlalchemy import Engine, event
+from app.logging_config import root_logger
+
+
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 app = FastAPI(docs_url=None)
 # app = FastAPI()
@@ -52,12 +60,10 @@ app = FastAPI(docs_url=None)
 # Serve static files from the 'static' directory within the 'app' folder
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
-logging.basicConfig(
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
 
-logger = None
+
+
+logger_sql = None
 
 # Function to format SQL statements
 def format_sql_statement(statement):
@@ -104,17 +110,13 @@ def before_cursor_execute(conn, cursor, statement, parameters, context, executem
         statement = bind_params(statement, parameters)
 
     formatted_sql = format_sql_statement(statement)
-    logger.info(f"Executing SQL:\n{formatted_sql}")
+    if formatted_sql.lower().startswith("select") :
+        if "/* is_endpoint_query */" in formatted_sql  : 
+            logger.info(f"Executing SQL:\n{formatted_sql}")
+    else :
+        logger.info(f"Executing SQL:\n{formatted_sql}")
     
-    # if "/* is_endpoint_query */" in statement and statement.startswith(('SELECT')):
-    #     statement_type = "Endpoint Query"
-    #     formatted_sql = format_sql_statement(statement)
-    #     logger.info(f"Executing SQL:\n{formatted_sql}")
-    # else:
-    #     if statement.startswith(('INSERT', 'UPDATE', 'DELETE')):
-    #         formatted_sql = format_sql_statement(statement)
-    #         logger.info(f"Executing SQL:\n{formatted_sql}")
-
+    
     
     return statement, parameters
 
@@ -130,13 +132,8 @@ def bind_params(statement, parameters):
 def after_execute(conn, clauseelement, multiparams, params, result):
     if clauseelement.__class__.__name__ == 'Select':
         count = result.rowcount
-        logger.info(f"Result count: {count}")
-        # logger.info("")
-
-        # 데이타를 표시하는 부분은 에러가 난다.
-        # rows = result.fetchall()
-        # logger.info(f"Result rows: {rows}")
-        # result.close()  # Make sure to close the result to release resources
+        if "/* is_endpoint_query */" in result.cursor._executed  : 
+            logger.info(f"Result count: {count}\n")
 
 
 # Custom logging formatter for SQL statements
@@ -144,17 +141,23 @@ def after_execute(conn, clauseelement, multiparams, params, result):
 
 @app.on_event("startup")
 async def startup_event():
-    global  logger
-    # logging.basicConfig()
-    logger = logging.getLogger('sqlalchemy.engine')
-    logger.setLevel(logging.INFO)
+    global  logger_sql
+    
+    logger_sql = logging.getLogger('sqlalchemy.engine')
+    """
+    에러가 난 경우에만 로그를 찍는다. 
+    sql log 는 before_cursor_execute,after_execute 에서 logging 을 이용한다.
+    개발의 편의성을 위해 파라메터에서 바인딩된 후의 로그를 찍는다.
+    예) users.user_id = 'chanjoo'  
+    """
+    logger_sql.setLevel(logging.WARNING)
 
     # Apply the custom SQLFormatter
     # handler = logging.StreamHandler()
     handler = FilteredHandler()
     handler.setFormatter(SQLFormatter())
     # below  logged twice
-    logger.addHandler(handler)
+    logger_sql.addHandler(handler)
 
     # Attach the event listener to the engine
     from app.database import engine  # Assuming your engine is imported from database module
@@ -190,17 +193,41 @@ async def shutdown_event():
 origins = [
     "http://localhost",
     "http://localhost:8080",
+    "http://localhost:8081",
     "http://localhost:3000",
+    "http://myapp.tde.sktelecom.com",
+    "http://myapp.tde.sktelecom.com:8080",
     "http://127.0.0.1:8080",
+    "http://127.0.0.1:8081",
     "http://150.6.13.90",
     "http://150.6.13.90:8080",
     "http://150.6.13.90:3000",
     "http://your-frontend-domain.com",
     "http://tat-02-10",
     "http://tat-02-10:8080",
-    "http://tat-02-10:3000"    
+    "http://tat-02-10:3000",    
+    # product1 : daisy backend, daisy frontend, mysql, opensearch, opensearch-dashboards
+    "http://dtl-xu-01",
+    "http://dtl-xu-01:8080",
+    "http://dtl-xu-01:8081",
+    "http://dtl-xu-01:3000",
+    "http://150.6.15.81",
+    "http://150.6.15.81:8080",
+    "http://150.6.15.81:8081",
+    "http://150.6.15.81:3000",
+    # product2 : mysql, opensearch
+    "http://dtl-xu-02",
+    "http://dtl-xu-02:8080",
+    "http://dtl-xu-02:8081",
+    "http://dtl-xu-02:3000"     
+    "http://150.6.15.105",
+    "http://150.6.15.105:8080",
+    "http://150.6.15.105:8081",
+    "http://150.6.15.105:3000",   
     
     # Add more origins as needed
+    # 김건우
+    "http://172.23.76.156:8080"
 ]
 app.add_middleware(
     CORSMiddleware,
@@ -319,7 +346,8 @@ async def add_session_to_request(request: Request, call_next):
 # app.include_router(sample_langchain_router, prefix="/api")
 app.include_router(utils_router, prefix="/api", tags=["Common Utils"])
 app.include_router(cmmcode_router, prefix="/api")
-app.include_router(user_router, prefix="/api")
+app.include_router(user_router, prefix="/api",tags=["Users"])   
+app.include_router(userAlert_router, prefix="/api/user/alert",tags=["Users Alert 시스템요청"])
 app.include_router(message_router, prefix="/api")
 app.include_router(message_system_router, prefix="/api")
 app.include_router(conversation_router, prefix="/api")
@@ -333,6 +361,7 @@ app.include_router(prompt_router, prefix="/api" ,tags=["Prompts"])
 app.include_router(tool_router, prefix="/api" ,tags=["Tools"])
 app.include_router(datasource_router, prefix="/api/datasource" ,tags=["Data Source"])
 app.include_router(dashbord_router, prefix="/api/dashboard" ,tags=["Dashboard"])
+app.include_router(sendmail_route, prefix="/api/sendmail" ,tags=["Send Mail"])
 app.include_router(realtime_updates.router)
 
 # app.include_router(docs_router,tags=["Docs"])
@@ -346,7 +375,7 @@ app.include_router(realtime_updates.router)
 
 @app.get("/docs", include_in_schema=False)
 async def custom_swagger_ui_html():
-    logging.info("Custom Swagger UI endpoint hit")
+    logger.info("Custom Swagger UI endpoint hit")
     return get_swagger_ui_html(
         openapi_url=app.openapi_url,
         title=app.title + " - Swagger UI",
@@ -365,6 +394,6 @@ async def root():
 
 @app.get("/test")
 async def test_endpoint():
-    logging.info("Test endpoint hit")
+    logger.info("Test endpoint hit")
     print("Test endpoint hit")
     return {"message": "Test endpoint is working"}

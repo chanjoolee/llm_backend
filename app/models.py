@@ -7,7 +7,7 @@ from datetime import datetime
 from ai_core.data_source.base import DataSourceType
 from ai_core.data_source.splitter.base import SplitterType
 from .database import Base , UserRoll , KST
-from pydantic import BaseModel , SecretStr , Field, field_validator, validator
+from pydantic import BaseModel , SecretStr , EmailStr, Field, computed_field, field_validator, root_validator, validator, model_validator
 from typing import Annotated, Optional ,List,ForwardRef
 
 # For lang chain  refer:  https://chatgpt.com/c/a1b04731-1218-4336-b466-8e67743f0ed1
@@ -70,6 +70,7 @@ class UserBase(BaseModel):
 class UserCreate(UserBase):
     pass
 
+
 class User(UserBase):
     user_roll : Optional[str]
     created_at: datetime
@@ -77,6 +78,8 @@ class User(UserBase):
     token_gitlab: Optional[str]
     token_confluence: Optional[str] 
     token_jira: Optional[str] 
+    llm_api_id : Optional[int] = Field(None,description="LLM API ID " )
+    llm_model : Optional[str] =  Field(None, description="LLM Model. LLM API에서 입력된 값중 하나만 입력")
 
     class Config:
         from_attributes = True
@@ -110,16 +113,25 @@ class UserUpdateToken(BaseModel):
     token_gitlab: str = Field(None, description="Gitlab Access Token")
     token_confluence: str = Field(None, description="Confluence Access Token")
     token_jira: str = Field(None, description="Jira Access Token")
+class UserAlertCreate(BaseModel):
+    user_id: str
+    llm_api_id : Optional[int] = Field(None,description="LLM API ID " )
+    llm_model : Optional[str] =  Field('gpt-4o', description="LLM Model. LLM API에서 입력된 값중 하나만 입력")
 
-
+class UserAlertUpdate(BaseModel):
+    llm_api_id : Optional[int] = Field(None,description="LLM API ID " )
+    llm_model : Optional[str] =  Field('gpt-4o', description="LLM Model. LLM API에서 입력된 값중 하나만 입력")
+    
 # 대화검색
 class ConversationSearch(BaseModel):
     search_range_list: Optional[List[str]] = ["message"] # multi-select 검색범위 제목 title, 메세지 message
     search_words: Optional[str] = ""
     started_at: Optional[datetime] = None
     last_conversation_time: Optional[datetime] = None
+    input_path_list : Optional[List[str]] = Field([],description="메세지 입력경로: prompt,conversation,system")
+    user_roll_list : Optional[List[str]] = Field([],description="생성자롤: MANAGER,ALERT,GUEST,OWNER,SYSTEM")
     conversation_type_list : Optional[List[str]] = [] # multi-select for 공개 여부 ['private','public']
-    component_list: Optional[List[str]] = [] # multi-select for 컴포넌트
+    component_list: Optional[List[object]] = [] # multi-select for 컴포넌트
     user_list: Optional[List[str]] = [] # multi-select for 사용자
     llm_api_list : Optional[List[int]] = []
     llm_model_list: Optional[List[str]] = []# multi-select for 텍스트 생성 모델 gpt-4o
@@ -267,9 +279,9 @@ class LlmApiCreate(LlmApiBase):
     pass
 
 class LlmApiSearch(BaseModel):
-    search_field: Optional[str] = ''
-    search_words: Optional[str] = ''
-    llm_api_type : Optional[str] = 'private'
+    search_field: Optional[str] = Field('')
+    search_words: Optional[str] = Field('')
+    llm_api_type : Optional[str] = Field('private',description="private,public")
 
     skip: Optional[int] = 0
     limit: Optional[int] = 10
@@ -301,42 +313,10 @@ class LlmApi(LlmApiBase):
     class Config:
         from_attributes = True
 
-# class ConfigBase(BaseModel):
-#     config_key: str
-#     config_value: str
-
+class SearchLlmApiResponse(BaseModel):
+    totalCount: int
+    list: List[LlmApi]
     
-
-# class ConfigCreate(ConfigBase):
-#     pass
-
-# class ConfigUpdate(BaseModel):
-#     config_value: str
-
-# class ChatbotConfig(ConfigBase):
-#     config_id: int
-#     created_at: datetime
-#     updated_at: datetime
-
-#     class Config:
-#         from_attributes = True
-
-# class StateBase(BaseModel):
-#     conversation_id: int
-#     state_key: str
-#     state_value: str
-
-# class StateCreate(StateBase):
-#     pass
-
-# class ChatbotState(StateBase):
-#     state_id: int
-#     created_at: datetime
-#     updated_at: datetime
-
-#     class Config:
-#         from_attributes = True
-
 class PromptMessageBase(BaseModel):
     message_type: str = Field(default="system,ai,human" ,description="메세지타입 system,ai,human")
     message: str
@@ -449,7 +429,9 @@ class TagDelete(BaseModel):
     skip: Optional[int] = 0
     limit: Optional[int] = 10
 
-
+class SearchTagResponse(BaseModel):
+    totalCount: int
+    list: List[Tag]
 
 class ToolBase(BaseModel):
     name: str
@@ -562,14 +544,20 @@ class Agent(AgentBase):
 
 
 class AgentSearch(BaseModel):
-    search_words: Optional[str] = None
+    search_words: Optional[str] = Field(None,description="검색어")
     search_range_list: Optional[List[str]] = None  # e.g., ['name', 'description']
     visibility_list: Optional[List[str]] = None  # e.g., ['public', 'private']
     # component_list: Optional[List[int]] = None  # e.g., list of component IDs
     tag_list: Optional[List[int]] = None  # e.g., list of tag IDs
     user_list: Optional[List[str]] = None  # e.g., list of user IDs
     llm_api_list: Optional[List[int]] = None  # e.g., list of LLM API IDs
+    
     llm_model_list: Optional[List[str]] = None  # e.g., list of LLM models
+    prompt_list : Optional[List[int]] = []
+    tool_list : Optional[List[int]] = []
+    datasource_list : Optional[List[str]] = []
+    component_list: Optional[List[object]] = [] # multi-select for 컴포넌트
+    
     skip: Optional[int] = 0
     limit: Optional[int] = 10
 
@@ -782,19 +770,40 @@ class EmbeddingCreate(EmbeddingBase):
 # Pydantic model for updating an embedding
 class EmbeddingUpdate(EmbeddingCreate):
     datasource_id: Optional[str] = Field(None, description="Data source ID for which embedding is created")
+    status_message: Optional[str] = Field(None, description="message when there is error")
     
 
 class Embedding(EmbeddingBase):
     embedding_id: str = Field(..., description="Unique identifier for the embedding")
     # datasource_id: str = Field(..., description="Data source ID for which embedding is created")
     status: str = Field(..., description="Status of the embedding process (e.g., )")
+    status_message: Optional[str] = Field(None, description="message when there is error")
     data_size: Optional[int] = Field(0, description="Size of the data in kilobytes")
     started_at: Optional[datetime] = Field(None, description="Timestamp when the embedding started")
     completed_at: Optional[datetime] = Field(None, description="Timestamp when the embedding was completed")
     success_at: Optional[datetime] = Field(None, description="Time when embedding succeeded")
-    last_update_time: datetime = Field(..., description="Timestamp when the embedding was last updated")
+    last_update_time: Optional[datetime] = Field(None, description="Timestamp when the embedding was last updated")
 
     llm_api : Optional[LlmApi] = None
+    
+    @computed_field
+    @property
+    def data_size_readable(self) -> str:
+        """Converts data_size in bytes to human-readable format."""
+        size = self.data_size or 0
+        if size < 1024:
+            return f"{size} Bytes"
+        elif size < 1024 ** 2:
+            return f"{size / 1024:.2f} KB"
+        elif size < 1024 ** 3:
+            return f"{size / 1024 ** 2:.2f} MB"
+        elif size < 1024 ** 4:
+            return f"{size / 1024 ** 3:.2f} GB"
+        elif size < 1024 ** 5:
+            return f"{size / 1024 ** 4:.2f} TB"
+        else:
+            return f"{size / 1024 ** 5:.2f} PB"
+        
     class Config:
         from_attributes = True
 
@@ -809,6 +818,8 @@ class EmbeddingSearchResponse(BaseModel):
     total_count: int  # Total number of results
     list: List[Embedding]  # List of matching embeddings
     
+    class Config:
+        from_attributes = True
     
 class EmbeddingPreview(EmbeddingCreate):
     splitter: SplitterType = Field(..., description="Splitter type used for preprocessing")
@@ -816,3 +827,19 @@ class EmbeddingPreview(EmbeddingCreate):
 class EmbeddingSimilaritySearch(BaseModel):
     embedding_id: str = Field(..., description="Unique identifier for the embedding")
     query: str = Field(...,description="query for collection")
+    
+    
+    
+    
+# Define a Pydantic model for the request body
+class GroupedTokenRequest(BaseModel):
+    llm_api_list: Optional[List[int]] = []
+    llm_model_list: Optional[List[str]] = []
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None    
+    
+class EmailRequest(BaseModel):
+    sender_email: EmailStr = Field(default="no-reply.daisy@sktelecom.com", description="")
+    receiver_email: EmailStr = Field(default="", description="")
+    subject: str  = Field(default="Test Email", description="")
+    content: str  = Field(default="This is a test email using SKT's internal SMTP service.", description="")

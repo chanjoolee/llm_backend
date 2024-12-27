@@ -92,8 +92,12 @@ class Conversation(BaseModel):
             if self.tools:
                 raise ValueError("Cannot have both agents and tools")
 
-            # TODO 슈퍼바이저 에이전트의 system message도 데이지에서 설정 가능하도록 할 것인가?
-            self._runnable = create_supervisor_agent(self._chat_model, self.agents, self._checkpointer, messages)
+            if len(self.agents) == 1:
+                # TODO 대화에서 설정한 텍스트 생성 모델을 사용하도록 변경
+                self._runnable = self.agents[0].agent_node
+            else:
+                # TODO 슈퍼바이저 에이전트의 system message도 데이지에서 설정 가능하도록 할 것인가?
+                self._runnable = create_supervisor_agent(self._chat_model, self.agents, self._checkpointer, messages)
         else:
             self._runnable = create_agent(self._chat_model, self._checkpointer, self.tools, before_messages=messages,
                                           debug=debug)

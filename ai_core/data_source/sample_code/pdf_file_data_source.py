@@ -3,6 +3,7 @@ from datetime import datetime
 
 from ai_core.data_source.base import create_data_source, DataSourceType
 from ai_core.data_source.splitter import create_splitter, SplitterType
+from ai_core.data_source.utils.time_utils import get_iso_8601_current_time, iso_8601_str_to_datetime
 from ai_core.data_source.utils.utils import create_collection_name, split_texts
 from ai_core.data_source.vectorstore.search_type import Similarity
 from ai_core.llm_api_provider import LlmApiProvider
@@ -12,6 +13,8 @@ async def main():
     pdf_file_path = "/Users/1113593/Downloads/dbb85bbe-9229-4cab-bbb3-625c11bdc63b_센터_세미나.pdf"
     opensearch_hosts = 'localhost:9200'
     opensearch_auth = ('admin', 'Skapfhd3122!@') # For testing only. Don't store credentials in code.
+
+    last_update_succeeded_at = "2024-11-01T00:00:53.000+0900"
 
     # 1. 데이터 소스 생성
     data_source = create_data_source(
@@ -32,7 +35,8 @@ async def main():
         llm_api_provider=llm_api_provider,
         llm_api_key="ba3954fe-9cbb-4599-966b-20b04b5d3441",
         llm_api_url="https://aihub-api.sktelecom.com/aihub/v1/sandbox",
-        llm_embedding_model_name=embedding_model_name)
+        llm_embedding_model_name=embedding_model_name,
+        last_update_succeeded_at=iso_8601_str_to_datetime(last_update_succeeded_at))
 
     preview_start = datetime.now()
     preview_data = data_source.load_preview_data(pdf_file_path=pdf_file_path)
@@ -41,17 +45,19 @@ async def main():
     print("Preview data loaded in ", str(preview_end - preview_start))
 
     # 3. 데이터를 Opensearch 저장
-    data_source.save_data(pdf_file_path=pdf_file_path)
+    data_source.save_data(last_update_succeeded_at=get_iso_8601_current_time(), pdf_file_path=pdf_file_path)
     print("Data saved successfully")
 
     # 4. 데이터 임베딩 및 Vectorstore에 추가
-    documents = data_source.read_data()
+    documents = await data_source.read_data()
     splitter = create_splitter(SplitterType.RecursiveCharacterTextSplitter, chunk_size=1000, chunk_overlap=200)
 
     splitted_documents = split_texts(documents, splitter)
 
     embed_task = (
-        asyncio.create_task(collection.embed_documents_and_overwrite_to_vectorstore(documents=splitted_documents)))
+        asyncio.create_task(
+            collection.embed_documents_and_overwrite_to_vectorstore(documents=splitted_documents,
+                                                                    last_update_succeeded_at=get_iso_8601_current_time())))
     print("Embedding task started")
 
     def embed_callback(future):

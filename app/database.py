@@ -1,17 +1,22 @@
+import asyncio
 import enum
+from uuid import UUID
 from langgraph.checkpoint.mysql.pymysql import PyMySQLSaver
 from sqlalchemy import Boolean, Float, UniqueConstraint, create_engine ,Table, Column, Integer, String, Text, Enum, ForeignKey, TIMESTAMP , event, Index, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import Session, relationship, sessionmaker , backref
 from urllib.parse import quote
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import Enum as PyEnum
 import os
 import app.config
-from typing import ForwardRef
+from typing import Dict, ForwardRef, Optional
 from ai_core.checkpoint.mysql_saver import MySQLSaver
 from ai_core.data_source.base import DataSourceType
 import pytz
+from sqlalchemy.dialects.mysql import JSON
+
+import app.endpoint
 
 KST = pytz.timezone('Asia/Seoul')
 # PromptMessages = ForwardRef('PromptMessages')
@@ -28,7 +33,10 @@ encoded_password = quote(password)
 SQLALCHEMY_DATABASE_URL = f"mysql+pymysql://{username}:{encoded_password}@{host}:{port}/{database}"
 
 engine = create_engine(
-    SQLALCHEMY_DATABASE_URL
+    SQLALCHEMY_DATABASE_URL,
+    pool_pre_ping=True,
+    pool_recycle=3600  # 1시간마다 연결을 재활용, MySQL 기본 타임아웃 8시간
+    # , echo=False
 )
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
@@ -37,8 +45,8 @@ db_comment_endpoint = text("/* is_endpoint_query */ 1=1")
 
 # Check environment variable for charset setting
 use_mysql_charset = os.getenv('USE_MYSQL_CHARSET', 'False') == 'True'
-mysql_charset = os.getenv('MYSQL_CHARSET', 'utf8mb3')
-mysql_collate = os.getenv('MYSQL_COLLATE', 'utf8mb3_general_ci')
+mysql_charset = os.getenv('MYSQL_CHARSET', 'utf8mb4')
+mysql_collate = os.getenv('MYSQL_COLLATE', 'utf8mb4_general_ci')
 
 table_args = {}
 if use_mysql_charset:
@@ -89,11 +97,26 @@ def create_sync_connection_pool():
         host = os.getenv('history_connection_host')
         port = os.getenv('history_connection_port')
         database_name = os.getenv('history_connection_database')
-
+        environment = os.getenv('ENVIRONMENT')
+        
         encoded_password = quote(password)
-        # connection_url = f"mysql+pymysql://{username}:{encoded_password}@{host}:{port}/{database_name}"
-        # connection_url_checkpoint = f"mysql://{username}:{encoded_password}@{host}:{port}/{database_name}"
-        # checkpointer_setup(connection_url_checkpoint)
+        connection_url = f"mysql+pymysql://{username}:{encoded_password}@{host}:{port}/{database_name}"
+        connection_url_checkpoint = f"mysql://{username}:{encoded_password}@{host}:{port}/{database_name}"
+        
+        # if environment == 'development':
+        #     connection_url_checkpoint = "mysql://root:Sktelecom1!@localhost:3306/daisy"
+        #     checkpointer_setup(connection_url_checkpoint)
+        # elif environment == 'product':
+        #     connection_url_checkpoint = "mysql://daisy:Skdaisy3!@150.6.13.242:3306/daisy"
+        #     checkpointer_setup(connection_url_checkpoint)
+        # else:
+        #     connection_url_checkpoint = "mysql://root:dataservice123!@#@localhost:3306/daisy"
+        #     # connection_url_checkpoint = f"mysql://{username}:{encoded_password}@{host}:{port}/{database_name}"
+        #     connection_url_checkpoint = f"mysql://{username}:{encoded_password}@{host}:{port}/{database_name}"
+        #     checkpointer_setup(connection_url_checkpoint)
+        
+        checkpointer_setup(connection_url_checkpoint)  
+        
         sync_conn_pool = MySQLSaver.create_sync_connection_pool(
             host=host,
             user=username,
@@ -226,6 +249,8 @@ class User(Base):
     token_gitlab = Column(String(255), comment='Token GitLab')
     token_confluence = Column(String(255), comment='Token Confluence')
     token_jira = Column(String(255), comment='Token Jira')
+    llm_api_id = Column(Integer, comment='LLM API ID. Alert 시스템용청을 관리하기 위함.') 
+    llm_model =  Column(String(255), comment='LLM Model. LLM API에서 입력된 값중 하나만 입력')
     created_at = Column(TIMESTAMP, default=lambda: datetime.now(KST) ,comment='생성일')
     updated_at = Column(TIMESTAMP, default=lambda: datetime.now(KST), onupdate=lambda: datetime.now(KST), comment='수정일')
 
@@ -360,7 +385,7 @@ class Message(Base):
     conversation_id = Column(String(255), ForeignKey('conversations.conversation_id',ondelete='NO ACTION'), comment='대화ID')
     message_type = Column(String(20), nullable=False, comment='메세지타입 ai,human,system')
     message = Column(Text, nullable=False, comment='메세지내용')
-    input_path = Column(String(20), nullable=False, comment='입력경로 prompt,conversation')
+    input_path = Column(String(20), nullable=False, comment='입력경로: prompt,conversation,system')
     
     # New Columns
     input_token = Column(Integer, default=0)
@@ -387,7 +412,7 @@ class LlmApi(Base):
         })
 
     llm_api_id = Column(Integer, primary_key=True, index=True, comment='LLM API ID')
-    llm_api_name = Column(String(255), nullable=False , comment='LLM API 이름') 
+    llm_api_name = Column(String(255), index=True, nullable=False , comment='LLM API 이름') 
     llm_api_type = Column(String(10),nullable=False, default='private', comment='오픈종료 private,public')
     llm_api_provider = Column(String(255) ,comment='LLM 타입(API)')
     llm_api_url = Column(String(255), nullable=False , comment='LLM Url')    
@@ -468,7 +493,7 @@ class Prompt(Base):
         })
 
     prompt_id = Column(Integer, primary_key=True, index=True,comment='프롬프트ID')
-    prompt_title =  Column(String(255), nullable=False , comment='프롬프트제목') 
+    prompt_title =  Column(String(255), index=True, nullable=False , comment='프롬프트제목') 
     prompt_desc = Column(Text, nullable=False , comment='프롬프트설명') 
     open_type = Column(String(20), default='private', comment='private,public')
     # tags = Column(Text, nullable=False, comment='태그')
@@ -580,7 +605,7 @@ class Tag(Base):
             'mysql_collate': mysql_collate
         })
     tag_id = Column(Integer, primary_key=True, index=True, comment='태그ID')
-    name = Column(String(100), unique=True, nullable=False, comment='태그명')
+    name = Column(String(100), unique=True, index=True, nullable=False, comment='태그명')
     background_color = Column(String(100) , comment='배경색 #009988')
     
     create_user = Column(String(255) ,comment='생성자')
@@ -598,7 +623,7 @@ class Tag(Base):
 class Tool(Base):
     __tablename__ = 'tools'
     tool_id = Column(Integer, primary_key=True, index=True, comment='Tool ID')
-    name = Column(String(255), nullable=False, comment='Tool Name')
+    name = Column(String(255), index=True, nullable=False, comment='Tool Name')
     description = Column(Text, comment='Tool Description')
     visibility = Column(String(20), nullable=False, default='private', comment='Visibility (private/public)')
     tool_configuration = Column(String(255), nullable=False, default='code', comment='Configuration (code/git)')  # New field
@@ -752,7 +777,7 @@ class DataSource(Base):
     # Timestamp when the data source was created, automatically set to the current time
     created_at = Column(TIMESTAMP, default=lambda: datetime.now(KST), comment='Timestamp when the data source was created')
     # Timestamp for the last update to the data source, automatically set to the current time
-    updated_at = Column(TIMESTAMP, default=lambda: datetime.now(KST), comment='Timestamp for the last update to the data source')
+    updated_at = Column(TIMESTAMP, default=lambda: datetime.now(KST), onupdate=lambda: datetime.now(KST), comment='Timestamp for the last update to the data source')
     uploaded_at = Column(TIMESTAMP, nullable=True, comment='Timestamp when the data was uploaded')  # New column added
     # User who created the data source
     create_user = Column(String(255), ForeignKey('users.user_id', ondelete='NO ACTION'), comment='User ID of the creator of the data source')
@@ -780,6 +805,7 @@ class EmbeddingStatus(Enum):
     updating = 'updating'
     updated = 'updated'
     failed = 'failed'
+    cancelled = 'cancelled'
 
 class Embedding(Base):
     """
@@ -825,17 +851,89 @@ class Embedding(Base):
 
 
     status = Column(String(255), nullable=False, default=EmbeddingStatus.updating, comment='Status of the embedding process  updating,updated,faild')
+    status_message = Column(Text, nullable=True, comment='message when there is error')
     data_size = Column(Integer, nullable=True, comment="Size of the data in kilobytes")
     started_at = Column(TIMESTAMP, nullable=True, comment='Timestamp when the embedding started')
     completed_at = Column(TIMESTAMP, nullable=True, comment='Timestamp when the embedding completed')
     success_at = Column(TIMESTAMP, nullable=True, comment='Timestamp when the embedding succeeded')
     
-    last_update_time = Column(TIMESTAMP, default=lambda: datetime.now(KST), comment='Last time this embedding was updated')
+    last_update_time = Column(TIMESTAMP, default=lambda: datetime.now(KST), onupdate=lambda: datetime.now(KST), comment='Last time this embedding was updated')
 
     # Relationship back to DataSource
     datasource = relationship("DataSource", back_populates="embeddings")    
     llm_api = relationship("LlmApi", back_populates="embeddings")
     
+
+# class ActiveTask(Base):
+
+#     __tablename__ = 'active_tasks'
+#     __table_args__ = {
+#         'comment': 'Table for managing active asyncio tasks across workers',
+#     }
+#     if use_mysql_charset:
+#         __table_args__.update({
+#             'mysql_charset': mysql_charset,
+#             'mysql_collate': mysql_collate
+#         })
+
+#     task_id = Column(String(255), primary_key=True, index=True, comment='Unique identifier for the task')
+#     worker_id = Column(String(255), nullable=False, comment='Worker ID managing the task')
+#     status = Column(String(20), nullable=False, default='active', comment='Task status: active, cancelled')
+#     created_at = Column(TIMESTAMP, default=lambda: datetime.now(KST), comment='Task creation timestamp')
+
+# local_task_registry: Dict[str, asyncio.Task] = {}
+
+# def register_task(db: Session, task_id: str, worker_id: str, task: asyncio.Task):
+#     """Register a new active task in both the database and the local registry."""
+#     # Add to local registry
+#     local_task_registry[task_id] = task
+
+#     # Register in the database
+#     new_task = ActiveTask(task_id=task_id, worker_id=worker_id, status="active")
+#     db.add(new_task)
+#     # db.commit()
+
+
+# def get_task(db: Session, task_id: str):
+#     """Retrieve task details."""
+#     # First, check if the task is in the local registry
+#     task = local_task_registry.get(task_id)
+#     if task:
+#         return task
+
+#     # Otherwise, query the database
+#     return db.query(ActiveTask).filter(ActiveTask.task_id == task_id).first()
+
+
+# def update_task_status(db: Session, task_id: str, status: str):
+#     """Update the task status in the database."""
+#     task = db.query(ActiveTask).filter(ActiveTask.task_id == task_id).first()
+#     if task:
+#         task.status = status
+#         # db.commit()
+
+
+# def remove_task(db: Session, task_id: str):
+#     """Remove a task from the local registry and the database."""
+#     # Remove from local registry
+#     if task_id in local_task_registry:
+#         del local_task_registry[task_id]
+
+#     # Remove from the database
+#     db.query(ActiveTask).filter(ActiveTask.task_id == task_id).delete()
+#     db.commit()
+
+
+class SessionStoreBackend(Base):
+    __tablename__ = 'session_store_backend'
+    __table_args__ = {
+        'comment': 'Table for managing sessions across workers',
+    }
+    session_id = Column(String(100), primary_key=True, comment='Unique identifier for the session')
+    user_id = Column(String(255), nullable=False, comment='User ID associated with the session')
+    session_data = Column(JSON, nullable=False, comment='Serialized session data in JSON format')  # Changed to JSON
+    created_at = Column(TIMESTAMP, default=lambda: datetime.now(KST), comment='Session creation timestamp')
+    expires_at = Column(TIMESTAMP, nullable=True, comment='Session expiration timestamp')
 
 
 # Create tables without foreign keys in the database
@@ -862,3 +960,13 @@ Conversation.tools = relationship(
 )
 
 # Conversation.llm_api = relationship("LlmApi", back_populates="conversation")
+
+
+
+
+
+
+
+
+
+

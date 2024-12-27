@@ -1,6 +1,6 @@
 import asyncio
 import traceback
-from fastapi import FastAPI, Depends, HTTPException , status
+from fastapi import FastAPI, Depends, HTTPException , status,logger as logger_fastapi
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
@@ -33,7 +33,9 @@ from ai_core.tool.base import load_tool
 import json
 import app.config
 
-logger = logging.getLogger('sqlalchemy.engine')
+logger_sql = logging.getLogger('sqlalchemy.engine')
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 router = APIRouter()
 
@@ -83,7 +85,7 @@ async def create_message(
     db: Session = Depends(get_db_async),
     session_data: SessionData = Depends(verifier)
 ):
-    logging.info("/messages 를 시작합니다.")
+    logger.info("/messages 를 시작합니다.")
     db_conversation = db.query(database.Conversation).filter(database.db_comment_endpoint).filter(database.Conversation.conversation_id==message.conversation_id).first()
 
     if db_conversation is None: 
@@ -112,6 +114,7 @@ async def create_message(
         sync_conn_pool=database.sync_conn_pool, 
         async_conn_pool=database.async_conn_pool
     )
+    logger.warning(f"conversation instance info : {conversation_instance}") 
 
     # prompts 추가.  message 에 넣는다.
     if db_conversation.messages :
@@ -137,12 +140,12 @@ async def create_message(
                     messages=add_to_prompt,
                     input_values={}
                 )
-                logging.info(f"create_message: tool append {db_prompt.prompt_title}") 
+                logger.info(f"create_message: tool append {db_prompt.prompt_title}") 
                 conversation_instance.add_prompt(prompt_component)     
     
 
     # tool 추가
-    logging.info(f"tool 추가")
+    logger.info(f"tool 추가")
     for tool in db_conversation.tools:
         pydantic_tool = convert_db_tool_to_pydantic(tool)
         file_save_path = construct_file_save_path(pydantic_tool)
@@ -310,6 +313,7 @@ async def create_message(
         try: 
             logger.info("create_message: conversation invoke")
             await conversation_instance.create_agent(debug=True)
+            logger.warning(f"conversation instance info : {conversation_instance}")
             async for message_ai in conversation_instance.invoke(db_conversation.conversation_id, message.message):
                 if isinstance(message_ai.message, list):
                     joined_texts = ''.join([msg['text'].encode('utf-8').decode('utf-8') for msg in message_ai.message if 'text' in msg])
@@ -336,7 +340,11 @@ async def create_message(
                     "message": json.loads(joined_texts) if is_json else joined_texts ,
                     "sent_at": datetime.now(KST).strftime('%Y-%m-%dT%H:%M:%S'),
                     "input_path": "conversation",
-                    "tokens_usage" : tokens_usage
+                    "tokens_usage" : {
+                        "total_tokens": get_sum_token([message_ai],'total_tokens'),
+                        "input_tokens": get_sum_token([message_ai],'input_tokens'),
+                        "output_tokens" : get_sum_token([message_ai],'output_tokens')
+                    }
                 }
                 processed_messages.append(processed_message)
                 messages_all.append(message_ai)
@@ -369,8 +377,8 @@ async def create_message(
                 "traceback": trace_str.split("\n")
                 # "traceback": format_traceback(e)
             }
-            logging.info(f"Error When message by invoke : {e}")
-            logging.info(trace_str)
+            logger.info(f"Error When message by invoke : {e}")
+            logger.info(trace_str)
             
             yield json.dumps(error_message,ensure_ascii=False) + "\n"
             # yield json.dumps(e.body)
@@ -523,7 +531,8 @@ async def create_message_stream(
 ):
     db_conversation = db.query(database.Conversation).filter(database.db_comment_endpoint).filter(database.Conversation.conversation_id==message.conversation_id).first()
     
-    logger.info(f"create_message_stream: conversation instance ") 
+    logger.info(f"create_message_stream: conversation instance ")
+    logger.info(f"message: {message}")
     conversation_instance = ConversationFactory.create_conversation(
         llm_api_provider=db_conversation.llm_api.llm_api_provider,
         llm_model=db_conversation.llm_model,
@@ -534,6 +543,7 @@ async def create_message_stream(
         sync_conn_pool=database.sync_conn_pool, 
         async_conn_pool=database.async_conn_pool
     )
+    
     
 
 
@@ -561,12 +571,12 @@ async def create_message_stream(
                     messages=add_to_prompt,
                     input_values={}
                 )
-                logging.info(f"create_message: tool append {db_prompt.prompt_title}") 
+                logger.info(f"create_message: tool append {db_prompt.prompt_title}") 
                 conversation_instance.add_prompt(prompt_component)  
 
 
     # tool 추가
-    logging.info(f"tool 추가")
+    logger.info(f"tool 추가")
     for tool in db_conversation.tools:
         pydantic_tool = convert_db_tool_to_pydantic(tool)
         file_save_path = construct_file_save_path(pydantic_tool)
@@ -666,7 +676,7 @@ async def create_message_stream(
         for db_embedding in db_datasource.embeddings:
             # # 3. 데이터 소스에 컬렉션 추가
             collection_name = create_collection_name(data_source.id, db_embedding.embedding_model)
-            logging.info(f"add collection for message: {collection_name}  to {db_datasource.datasource_id}" )
+            logger.info(f"add collection for message: {collection_name}  to {db_datasource.datasource_id}" )
             collection = data_source.add_collection(
                 collection_name=collection_name,
                 llm_api_provider=LlmApiProvider(db_embedding.llm_api.llm_api_provider),
@@ -690,8 +700,7 @@ async def create_message_stream(
     db.add(db_message)
     db.flush()  # Commit to get the message ID
     db.refresh(db_message)
-
-
+    
     # 내부함수를 직접 쓴다.
     collected_response = []
     collected_response_all = []
@@ -703,7 +712,15 @@ async def create_message_stream(
             group_message = grouped_responses[ai_message_id]
             first_message = group_message[0]
             if first_message : 
-                joined_messages = ''.join([chunk.message.encode('utf-8').decode('utf-8') for chunk in group_message])
+                joined_messages = ''.join(
+                    [
+                        chunk.message.encode('utf-8').decode('utf-8') if isinstance(chunk.message, str)
+                        else json.dumps(chunk.message, ensure_ascii=False) if isinstance(chunk.message, (list, dict))
+                        else "" if chunk.message is None
+                        else str(chunk.message)  # Fallback for unexpected types
+                        for chunk in group_message
+                    ]
+                )
                 
                 db_message_ai = database.Message(
                     conversation_id = db_conversation.conversation_id,
@@ -736,25 +753,46 @@ async def create_message_stream(
             # 스트리밍 방식
             await conversation_instance.create_agent(debug=True)
             logger.info("create_message_stream: conversation stream")
+            logger.warning(f"conversation instance info : {conversation_instance}") 
             async for chunk in conversation_instance.stream(message.conversation_id, message.message):
                 try: 
                     collected_response.append(chunk.message)
                     collected_response_all.append(chunk)
+                    # logger.info(chunk.message)
+                    # Inside your code where you process chunk.message
+                    chunk_message = ""
+                    if isinstance(chunk.message, str):  # Check if it's a string
+                        chunk_message = chunk.message.encode('utf-8').decode('utf-8')
+                    elif isinstance(chunk.message, (list, dict)):  # Handle list or dict types
+                        chunk_message = json.dumps(chunk.message, ensure_ascii=False)  # Convert to JSON string
+                    elif chunk.message is None:  # Handle None
+                        chunk_message = ""
+                    else:
+                        # Handle other unexpected types gracefully
+                        chunk_message = str(chunk.message)
+                        
                     yield_chunk = {
                         "id" : chunk.id,
-                        "message" : chunk.message.encode('utf-8').decode('utf-8'),
+                        "message" : chunk_message,
                         "message_type" : chunk.role.value,
-                        "sent_at": datetime.now(KST).strftime('%Y-%m-%dT%H:%M:%S')
+                        "sent_at": datetime.now(KST).strftime('%Y-%m-%dT%H:%M:%S'),
+                        "tokens_usage" : {
+                            "total_tokens": get_sum_token([chunk],'total_tokens'),
+                            "input_tokens": get_sum_token([chunk],'input_tokens'),
+                            "output_tokens" : get_sum_token([chunk],'output_tokens')
+                        }
                     }                
                     yield json.dumps(yield_chunk,ensure_ascii=False)
                 except ValueError as e:
-                    logging.error(f"error when {message.conversation_id} ")
+                    logger.error(f"error when {message.conversation_id} ")
+                    
                     yield_chunk = {
                         "id" : chunk.id,
                         "message" : f"{str(e)}",
                         "message_type" : chunk.role.value,
                         "sent_at": datetime.now(KST).strftime('%Y-%m-%dT%H:%M:%S')
-                    }                
+                    }      
+                    logger.error(f"error info {yield_chunk}")          
                     yield json.dumps(yield_chunk,ensure_ascii=False)
                     break
                     
@@ -784,8 +822,8 @@ async def create_message_stream(
                 "traceback": trace_str.split("\n")
                 # "traceback": format_traceback(e)
             }
-            logging.info(f"Error When message by stream : {e}")
-            logging.info(trace_str)
+            logger.info(f"Error When message by stream : {e}")
+            logger.info(trace_str)
             
             yield json.dumps(error_message,ensure_ascii=False)
             # yield json.dumps(e.body)

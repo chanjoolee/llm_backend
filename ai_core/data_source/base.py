@@ -3,7 +3,6 @@ import io
 import json
 import logging
 import random
-import sys
 from abc import abstractmethod
 from datetime import datetime
 from enum import Enum
@@ -19,13 +18,14 @@ from docx.api import Document as DocxDocument
 
 from ai_core.base import ComponentType, create_tool_name
 from ai_core.data_source.model.document import Document, DocumentEncoder
-from ai_core.data_source.utils.opensearch_utils import switch_to_new_index
+from ai_core.data_source.utils.opensearch_utils import switch_to_new_index, IndexingStatistics, asearch, \
+    delete_indices_with_alias
 from ai_core.data_source.utils.utils import create_data_source_id, bs4_extractor, truncate_content, get_first
+from ai_core.data_source.utils.time_utils import get_iso_8601_current_time, DATE_FORMAT
 from ai_core.data_source.utils.opensearch_utils import create_opensearch_index_name
 from ai_core.data_source.collection import Collection
 from ai_core.data_source.utils.jira_utils import filter_required_fields, cleanse_fields
 from ai_core.data_source.vectorstore.search_type import Similarity
-from ai_core.time_utils import datetime_to_str
 
 from langchain_core.retrievers import BaseRetriever
 from langchain.tools.retriever import create_retriever_tool
@@ -69,23 +69,18 @@ class DataSource(BaseModel):
     PREVIEW_DATA_MAX_LENGTH: int = 10000
 
     def model_post_init(self, __context: Any) -> None:
-        self.opensearch_client = OpenSearch(
-            hosts = self.opensearch_hosts,
-            http_compress = True,
-            http_auth = self.opensearch_auth,
-            use_ssl = True,
-            verify_certs = False,
-            ssl_show_warn = False
-        )
+        opensearch_client_args = {
+            "hosts": self.opensearch_hosts,
+            "http_compress": True,
+            "http_auth": self.opensearch_auth,
+            "use_ssl": True,
+            "verify_certs": False,
+            "ssl_show_warn": False,
+            "auto_create_index": False
+        }
 
-        self.async_opensearch_client = AsyncOpenSearch(
-            hosts = self.opensearch_hosts,
-            http_compress = True,
-            http_auth = self.opensearch_auth,
-            use_ssl = True,
-            verify_certs = False,
-            ssl_show_warn = False
-        )
+        self.opensearch_client = OpenSearch(**opensearch_client_args)
+        self.async_opensearch_client = AsyncOpenSearch(**opensearch_client_args)
 
     def add_collection(self, collection_name: str, llm_api_provider: str, llm_api_key: str, llm_api_url: str,
                        llm_embedding_model_name: str, last_update_succeeded_at: Optional[datetime] = None):
@@ -132,7 +127,7 @@ class DataSource(BaseModel):
             "llm_api_provider": latest_collection.llm_api_provider,
             "llm_api_url": latest_collection.llm_api_url,
             "llm_embedding_model": latest_collection.llm_embedding_model.name,
-            "created_at": datetime_to_str(datetime.now())
+            "created_at": get_iso_8601_current_time()
         }
 
         index_alias = latest_collection.name
@@ -173,7 +168,18 @@ class DataSource(BaseModel):
         except asyncio.CancelledError:
             logger.info(f"Save task of datasource {self.id} was cancelled.")
 
-    def save_data(self, **kwargs) -> dict:
+    def save_data(self, last_update_succeeded_at: str, **kwargs) -> dict:
+        logger.info(f"Start saving data of datasource {self.id}")
+
+        documents = self._download_data(**kwargs)
+
+        result = self._save_data(documents=documents, last_update_succeeded_at=last_update_succeeded_at, kwargs=kwargs)
+
+        logger.info(f"Finish saving data of datasource {self.id}")
+
+        return result
+
+    def _save_data(self, documents: Iterable[Document], last_update_succeeded_at: str, **kwargs) -> dict:
         '''
         docx, pdf file, confluence 등 다양한 소스로부터 불러온 텍스트 데이터를 opensearch에 저장합니다.
 
@@ -188,62 +194,77 @@ class DataSource(BaseModel):
             self.save_data_in_progress = True
 
             index_alias = self.id
+            index_alias_in_progress = f"{index_alias}_in_progress"
             index_name = create_opensearch_index_name(self.id)
-            prev_index_names = self.opensearch_client.indices.get(index=f"{index_alias}_*").keys()
+
+            # 이전에 실패했던 작업이 있을 경우, 생성된 index를 삭제합니다.
+            delete_indices_with_alias(self.opensearch_client, index_alias_in_progress)
+
+            prev_index_names = []
+            if self.opensearch_client.indices.exists_alias(name=index_alias):
+                prev_index_names = self.opensearch_client.indices.get_alias(name=index_alias).keys()
             result = {"index_name": index_name, "index_alias": index_alias}
 
             # Opensearch index 생성
             logger.info(f"Create opensearch index: {index_name}")
             self.opensearch_client.indices.create(index=index_name)
+            self.opensearch_client.indices.put_alias(index=index_name, name=index_alias_in_progress)
 
             # 문서 다운로드
             logger.info(f"Download data from {self.data_source_type.name}. {kwargs}")
-            documents: Iterable[Document] = self._download_data(**kwargs)
 
             # 문서 색인
             logger.info(f"Indexing documents to opensearch index: {index_name}")
-            doc_count = 0
-            doc_total_bytes = 0
-            doc_max_bytes = 0
-            doc_min_bytes = sys.maxsize
+            indexing_statistics = IndexingStatistics()
             for document in documents:
+                doc_id = None
+                if document.metadata:
+                    doc_id = document.metadata.get("doc_id", None)
+                    document.metadata["last_update_succeeded_at"] = last_update_succeeded_at
+                    document.metadata["data_source_type"] = self.data_source_type.value
+
                 json_string = json.dumps(document, cls=DocumentEncoder, indent=2, ensure_ascii=False)
-                try:
-                    self.opensearch_client.index(index=index_name, body=json_string)
-                except Exception as e:
-                    logger.error(f"Error occurred while indexing document: {e}")
-                    continue
 
-                size_bytes = len(json_string.encode('utf-8'))
-                doc_count += 1
-                doc_total_bytes += size_bytes
-                doc_max_bytes = max(doc_max_bytes, size_bytes)
-                doc_min_bytes = min(doc_min_bytes, size_bytes)
+                self.opensearch_client.index(index=index_name, body=json_string, id=doc_id)
 
-            doc_avg_bytes = doc_total_bytes / doc_count
-            result.update({
-                "doc_count": doc_count,
-                "doc_total_bytes": doc_total_bytes,
-                "doc_max_bytes": doc_max_bytes,
-                "doc_min_bytes": doc_min_bytes,
-                "doc_avg_bytes": doc_avg_bytes
-            })
+                indexing_statistics.increment(len(json_string.encode('utf-8')))
 
-            # alias 업데이트
-            logger.info(f"Update opensearch index alias: {index_alias}, index name: {index_name}")
-            switch_to_new_index(self.opensearch_client, index_alias, index_name, prev_index_names)
+            stats = indexing_statistics.values()
+            logger.info(f"Indexed {stats['doc_count']} documents to opensearch index: {index_name}. "
+                        f"stats: {stats}")
 
             logger.info(f"Refresh opensearch index: {index_name}")
             self.opensearch_client.indices.refresh(index=index_name)
 
-            return result
+            # alias 업데이트
+            logger.info(f"Update opensearch index alias: {index_alias}, index name: {index_name}")
+            switch_to_new_index(self.opensearch_client, index_alias, index_alias_in_progress, index_name,
+                                prev_index_names)
+
+            return {**result, **stats}
         except Exception as e:
             logger.error(f"Error occurred while saving data: {e}")
             raise e
         finally:
             self.save_data_in_progress = False
 
-    async def read_data(self) -> AsyncIterable[Document]:
+    def _update_data(self, **kwargs) -> dict:
+        return self.save_data(**kwargs)
+
+    def update_data(self, **kwargs) -> dict:
+        '''
+        데이터를 업데이트합니다.
+        :param kwargs: DataSource의 구현체마다 각각 다른 파라메터를 전달 받습니다.
+        :return result dict: index_name, index_alias, doc_count, doc_total_bytes, doc_max_bytes, doc_min_bytes, doc_avg_bytes
+        '''
+
+        index_alias = self.id
+        if self.opensearch_client.indices.exists_alias(name=index_alias):
+            return self._update_data(**kwargs)
+        else:
+            raise ValueError(f"Index alias {index_alias} does not exist.")
+
+    async def read_data(self, since: str = None) -> AsyncIterable[Document]:
         '''
         opensearch에서 데이터를 읽어옵니다.
         '''
@@ -251,32 +272,18 @@ class DataSource(BaseModel):
         logger.info(f"Read data from opensearch index: {self.id}")
         index_alias = self.id
         client = self.async_opensearch_client
-        last_sort = None
-        retrieved_size = 1000
+        query = {"match_all": {}}
 
-        while retrieved_size == 1000:
-            body = {
-                "query": {"match_all": {}},
-                "sort": [{"_id": "asc"}],
-                "search_after": last_sort,
-                "size": 1000
+        if since:
+            query = {
+                "range": {
+                    "metadata.last_update_succeeded_at": {
+                        "gte": since
+                    }
+                }
             }
-            if not last_sort:
-                body.pop("search_after")
 
-            response = await client.search(
-                index=index_alias,
-                body=body
-            )
-
-            hits = response['hits']['hits']
-            retrieved_size = len(hits)
-
-            if len(hits) > 0:
-                last_sort = hits[-1]['sort']
-
-            for hit in hits:
-                yield Document(**hit["_source"])
+        return asearch(async_opensearch_client=client, index_name=index_alias, query=query)
 
     async def read_preview_data(self) -> str:
         index_alias = self.id
@@ -451,7 +458,14 @@ class ConfluenceDataSource(DataSource):
 
 class GitlabDataSource(DataSource):
     def _create_metadata(self, file_content: ProjectFile):
-        return {"file_path": file_content.file_path} if file_content.file_path else {}
+        metadata = {}
+        if file_content.file_path:
+            metadata["file_path"] = file_content.file_path
+            metadata["doc_id"] = base64.standard_b64encode(file_content.file_path.encode('utf-8')).decode('utf-8')
+        if file_content.last_commit_id:
+            metadata["last_commit_id"] = file_content.last_commit_id
+
+        return metadata
 
     def _download_data(self, url: str, namespace: str, project_name: str, branch: str, private_token: str) \
             -> Iterable[Document]:
@@ -496,7 +510,7 @@ class GitlabDataSource(DataSource):
             return random.choice(list(file_paths))
 
         except gitlab.exceptions.GitlabError as e:
-            print(f"Error getting file list: {e}")
+            logger.error(f"Error getting file list: {e}")
             return None
 
     def load_preview_data(self, url: str, namespace: str, project_name: str, branch: str, private_token: str) -> str:
@@ -509,6 +523,124 @@ class GitlabDataSource(DataSource):
             return truncate_content(decoded_content, self.PREVIEW_DATA_MAX_LENGTH)
         except UnicodeDecodeError:
             logger.error(f"Can't decode {preview_file_path}")
+
+    def _get_file_paths_for_update(self, gitlab_project_key: str, gitlab_project: Project, branch: str,
+                                   since: str) -> (set, set):
+        '''
+        :param gitlab_project_key: gitlab project key
+        :param gitlab_project: gitlab project object
+        :param branch: gitlab branch name
+        :param since: ex) ""2024-06-01T09:00:00.000+0900""
+        :return: update_file_paths, delete_file_paths
+        '''
+
+        commits = gitlab_project.commits.list(ref_name=branch, since=since, get_all=True)
+        commits = sorted(commits, key=lambda x: x.committed_date)
+
+        upsert_file_paths = set()
+        delete_file_paths = set()
+
+        logger.info(f"Getting file list of gitlab project {gitlab_project_key}, branch {branch} to update")
+
+        for commit in commits:
+            diff = gitlab_project.commits.get(commit.id).diff(get_all=True)
+            for changed_file in diff:
+                if changed_file.get("deleted_file"):
+                    delete_file_paths.add(changed_file.get("old_path"))
+                    upsert_file_paths.discard(changed_file.get("old_path"))
+                elif changed_file.get("renamed_file"):
+                    upsert_file_paths.discard(changed_file.get("old_path"))
+                    upsert_file_paths.add(changed_file.get("new_path"))
+                    delete_file_paths.add(changed_file.get("old_path"))
+                else:
+                    # new_file, modified_file
+                    upsert_file_paths.add(changed_file.get("new_path"))
+                    delete_file_paths.discard(changed_file.get("new_path"))
+
+        logger.info(f"There are {len(upsert_file_paths)} added or changed files of gitlab project {gitlab_project_key}, "
+              f"branch {branch} since {since}")
+
+        logger.info(f"There are {len(delete_file_paths)} deleted files of gitlab project {gitlab_project_key}, branch {branch} "
+              f"since {since}")
+
+        return upsert_file_paths, delete_file_paths
+
+    def _download_data_for_update(self, gitlab_project: Project, branch: str, upsert_file_paths: set) \
+            -> Iterable[Document]:
+        '''
+        :param gitlab_project: gitlab project object
+        :param branch: gitlab branch name
+        :param upsert_file_paths: set of file paths to update
+        :return: result: iterable documents
+        '''
+
+        for upsert_file_path in upsert_file_paths:
+            try:
+                file_for_upsert: ProjectFile = gitlab_project.files.get(file_path=upsert_file_path, ref=branch)
+                decoded_content = base64.b64decode(file_for_upsert.content).decode('utf-8')
+                yield Document(content=decoded_content, metadata=self._create_metadata(file_for_upsert))
+            except gitlab.exceptions.GitlabGetError:
+                # subtree는 파일을 가져오지 못함
+                logger.error(f"Error getting file from gitlab: {upsert_file_path}")
+
+    def _update_documents(self, project_key: str, gitlab_project: Project, branch: str,
+                          documents: Iterable[Document], delete_file_paths: set, last_update_succeeded_at: str) -> dict:
+        '''
+        :param url: gitlab url
+        :param namespace: gitlab namespace
+        :param project_name: gitlab project name
+        :param branch: gitlab branch name
+        :param private_token: gitlab private token
+        :param last_update_succeeded_at: ex) ""2024-06-01T09:00:00.000+0900""
+        :return: result dict: index_alias, doc_count, doc_total_bytes, doc_max_bytes, doc_min_bytes, doc_avg_bytes
+        '''
+
+        indexing_statistics = IndexingStatistics()
+
+        logger.info(f"Start updating data of gitlab project {project_key}, branch {branch}")
+        index_alias = self.id
+        for document in documents:
+            document.metadata["last_update_succeeded_at"] = last_update_succeeded_at
+            json_string = json.dumps(document, cls=DocumentEncoder, indent=2, ensure_ascii=False)
+            doc_id = document.metadata.get("doc_id")
+            self.opensearch_client.index(index=index_alias, body=json_string, id=doc_id)
+
+            indexing_statistics.increment(len(json_string.encode('utf-8')))
+
+        for delete_file_path in delete_file_paths:
+            file_for_delete: ProjectFile = gitlab_project.files.get(file_path=delete_file_path, ref=branch)
+            self.opensearch_client.delete(index=index_alias, id=file_for_delete.blob_id)
+
+            indexing_statistics.decrement(len(file_for_delete.content.encode('utf-8')))
+
+        logger.info(f"Finish updating data of gitlab project {project_key}, branch {branch}")
+        result = {"index_alias": index_alias}
+
+        return {**result, **indexing_statistics.values()}
+
+    def _update_data(self, url: str, namespace: str, project_name: str, branch: str, 
+                     private_token: str, since: str, last_update_succeeded_at: str) -> dict:
+        '''
+        :param url: gitlab url
+        :param namespace: gitlab namespace
+        :param project_name: gitlab project name
+        :param branch: gitlab branch name
+        :param private_token: gitlab private token
+        :param since: 이 시각 이후에 커밋된 파일을 업데이트합니다. ex) ""2024-06-02T09:00:00.000+0900""
+        :param last_update_succeeded_at: 마지막 업데이트 시각을 저장합니다. ex) ""2024-06-01T09:00:00.000+0900""
+        :return: result dict: index_alias, doc_count, doc_total_bytes, doc_max_bytes, doc_min_bytes, doc_avg_bytes
+        '''
+
+        project_key = f"{namespace}/{project_name}"
+        gl = gitlab.Gitlab(url=url, private_token=private_token)
+        project = gl.projects.get(project_key)
+        
+        upsert_file_paths, delete_file_paths = (
+            self._get_file_paths_for_update(project_key, project, branch, since))
+        documents = self._download_data_for_update(project, branch, upsert_file_paths)
+        result = self._update_documents(project_key, project, branch, documents, delete_file_paths, last_update_succeeded_at)
+
+        return result
 
 
 class UrlDataSource(DataSource):
@@ -577,6 +709,10 @@ class JiraDataSource(DataSource):
     def _create_metadata(self, cleaned_fields: dict) -> dict:
         metadata_keys = ["key", "updated", "assignee"]
         metadata = {key: cleaned_fields[key] for key in metadata_keys if key in cleaned_fields}
+        key = cleaned_fields.get("key")
+        if key:
+            metadata["doc_id"] = key
+            metadata.pop("key")
 
         return metadata if metadata else {}
 
@@ -591,12 +727,10 @@ class JiraDataSource(DataSource):
             for issue_key in issue_keys:
                 issue = jira.issue(issue_key)
 
-                required_fields = filter_required_fields(issue["fields"])
+                required_fields = filter_required_fields(issue)
                 cleaned_fields = cleanse_fields(required_fields)
-                cleaned_fields["key"] = issue["key"]
-                key = {"key": issue["key"]}
 
-                content = json.dumps({**key, **cleaned_fields}, indent=2, ensure_ascii=False)
+                content = json.dumps(cleaned_fields, indent=2, ensure_ascii=False)
                 metadata = self._create_metadata(cleaned_fields)
 
                 yield Document(content=content, metadata=metadata)
@@ -608,21 +742,81 @@ class JiraDataSource(DataSource):
         else:
             logger.info(f"No issue keys retrieved. Finish loading jira issues for {project_key} project.")
 
-    def load_preview_data(self, url: str, project_key: str, access_token: str, start: int = 0, limit: int = 1,
-                          call_interval: float = 0.05) -> str:
+    def load_preview_data(self, url: str, project_key: str, access_token: str, start: int = 0, limit: int = 1) -> str:
         jira = Jira(url=url, token=access_token)
         issue_keys = jira.get_project_issuekey_all(project_key, start=start, limit=limit)
 
         if issue_keys:
             issue = jira.issue(issue_keys[0])
-            required_fields = filter_required_fields(issue["fields"])
+            required_fields = filter_required_fields(issue)
             cleaned_fields = cleanse_fields(required_fields)
-            cleaned_fields["key"] = issue["key"]
-            key = {"key": issue["key"]}
 
-            return json.dumps({**key, **cleaned_fields}, indent=2, ensure_ascii=False)
+            return json.dumps(cleaned_fields, indent=2, ensure_ascii=False)
         else:
             return ""
+
+    def _download_data_for_update(self, url: str, project_key: str, access_token: str, since: str,
+                                  call_interval: float) -> Iterable[Document]:
+        '''
+        :param url: jira url
+        :param project_key: jira project key
+        :param access_token: jira access token
+        :param since: ex) "2024-06-01T00:00:00.000+0000"
+        :return: iterable documents
+        '''
+
+        start_date = datetime.strptime(since, DATE_FORMAT).strftime("%Y-%m-%d %H:%M")
+        jira = Jira(url=url, token=access_token)
+        issues = jira.jql(f"project = '{project_key}' AND updated >= '{start_date}'")
+        logger.info(f"Retrieved {len(issues.get('issues', []))} issues updated since {since}")
+
+        for issue in issues.get("issues", []):
+            required_fields = filter_required_fields(issue)
+            cleaned_fields = cleanse_fields(required_fields)
+
+            content = json.dumps(cleaned_fields, indent=2, ensure_ascii=False)
+            metadata = self._create_metadata(cleaned_fields)
+
+            yield Document(content=content, metadata=metadata)
+
+            sleep(call_interval)
+
+    def _update_data(self, url: str, project_key: str, access_token: str, since: str, last_update_succeeded_at: str,
+    call_interval: float = 0.25) -> dict:
+        '''
+        신규 업데이트 된 이슈를 가져와서 색인합니다.
+        last_update_succeeded_at 이후에 업데이트 된 이슈만 가져옵니다.
+
+        :param url: jira url
+        :param project_key: jira project key
+        :param access_token: jira access token
+        :param since: 이 시간 이후에 업데이트된 jira issue를 업데이트 합니다. ex) "2024-06-01T00:00:00.000+0000"
+        :param last_update_succeeded_at: 마지막 업데이트한 시각을 저장합니다. ex) "2024-06-02T00:00:00.000+0000"
+        :return: result dict: index_alias, doc_count, doc_total_bytes, doc_max_bytes, doc_min_bytes, doc_avg_bytes
+        '''
+
+        logger.info(f"Start updating data of jira project {project_key}")
+        index_alias = self.id
+
+        documents = self._download_data_for_update(
+            url, project_key, access_token, since, call_interval)
+        indexing_statistics = IndexingStatistics()
+
+        logger.info(f"Indexing documents to opensearch index: {index_alias}")
+        for document in documents:
+            document.metadata["last_update_succeeded_at"] = last_update_succeeded_at
+            body = json.dumps(document, cls=DocumentEncoder, indent=2, ensure_ascii=False)
+            doc_id = document.metadata.get("doc_id")
+            self.opensearch_client.index(index=index_alias, body=body, id=doc_id)
+
+            indexing_statistics.increment(len(body.encode('utf-8')))
+
+        indexing_result = indexing_statistics.values()
+
+        logger.info(f"Indexed {indexing_result['doc_count']} documents to opensearch index: {self.id}. ")
+        logger.info(f"Finish updating data of jira project {project_key}")
+
+        return {"index_alias": index_alias, **indexing_result}
 
 
 class GitlabDiscussionDataSource(DataSource):

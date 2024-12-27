@@ -1,3 +1,4 @@
+import logging
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from starlette.websockets import WebSocketState
 from typing import Set
@@ -6,6 +7,10 @@ import json
 from json import JSONEncoder
 from datetime import datetime
 from pydantic import SecretStr
+from enum import Enum
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 router = APIRouter()
 connected_clients: Set[WebSocket] = set()
@@ -37,6 +42,9 @@ class CustomJSONEncoder(JSONEncoder):
         elif isinstance(obj, SecretStr):
             # return obj.get_secret_value()  # Retrieve the underlying string value of SecretStr
             return "****"
+        elif isinstance(obj, Enum):
+            # Serialize Enum by its value (or use obj.name if you prefer)
+            return obj.value
         return super().default(obj)
     
 async def broadcast_update(message: dict):

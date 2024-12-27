@@ -1,3 +1,8 @@
+import json
+import os
+from datetime import datetime , timedelta
+import time
+import logging
 from pydantic import BaseModel
 from fastapi import HTTPException, APIRouter, FastAPI,Request,  Response, Depends
 from uuid import UUID, uuid4
@@ -8,13 +13,23 @@ from fastapi_sessions.frontends.implementations import SessionCookie, CookiePara
 from sqlalchemy import text
 from starlette.middleware.base import BaseHTTPMiddleware
 from typing import List, Optional
-from app.database import SessionLocal, get_db
+from app.database import KST, SessionLocal, get_db
 from app import models, database
 from sqlalchemy.orm import Session
 from app.utils.utils import pwd_context , hash_password ,  verify_password
 
-router = APIRouter()
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+import app.config
+from contextvars import ContextVar
+# Context variable to hold session data globally
+session_context = ContextVar("session_context", default=None)
 
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+router = APIRouter()
 
 
 class SessionData(BaseModel):
@@ -25,7 +40,41 @@ class SessionData(BaseModel):
     token_confluence: Optional[str]
     token_jira: Optional[str]
 
+class DatabaseBackend:
+    def __init__(self, db_session_factory, expiration_minutes=60*60*24):
+        self.db_session_factory = db_session_factory
+        self.expiration_minutes = expiration_minutes
+        
+    async def create(self, session_id: UUID, data: SessionData):
+        """Create a new session in the database."""
+        with self.db_session_factory() as db:
+            expires_at = datetime.now(KST) + timedelta(minutes=self.expiration_minutes)
+            db_session_store = database.SessionStoreBackend(
+                session_id=str(session_id),
+                user_id=data.user_id,
+                session_data=data.dict(),  # Directly store the dictionary
+                expires_at=expires_at
+            )
+            db.add(db_session_store)
+            db.commit()
 
+    async def read(self, session_id: UUID) -> Optional[SessionData]:
+        """Read session data from the database."""
+        with self.db_session_factory() as db:
+            db_session_store = db.query(database.SessionStoreBackend).filter(database.SessionStoreBackend.session_id == str(session_id)).first()
+            db_expires_at = db_session_store.expires_at.replace(tzinfo=KST)
+            # if not db_session_store or (db_session_store.expires_at and db_expires_at < datetime.now(KST)):
+            # 세션타임을 생각하지 않는다.
+            if not db_session_store :
+                return None
+            return SessionData(**db_session_store.session_data)  # JSON column is directly deserialized
+
+
+    async def delete(self, session_id: UUID):
+        """Delete a session from the database."""
+        with self.db_session_factory() as db:
+            db.query(database.SessionStoreBackend).filter(database.SessionStoreBackend.session_id == str(session_id)).delete()
+            db.commit()
 
 cookie_params = CookieParameters()
 
@@ -37,7 +86,8 @@ cookie = SessionCookie(
     secret_key="DONOTUSE",
     cookie_params=cookie_params,
 )
-session_backend = InMemoryBackend[UUID, SessionData]()
+# session_backend = InMemoryBackend[UUID, SessionData]()
+session_backend = DatabaseBackend(db_session_factory=SessionLocal)
 
 
 class BasicVerifier(SessionVerifier[UUID, SessionData]):
@@ -46,7 +96,8 @@ class BasicVerifier(SessionVerifier[UUID, SessionData]):
         *,
         identifier: str,
         auto_error: bool,
-        backend: InMemoryBackend[UUID, SessionData],
+        # backend: InMemoryBackend[UUID, SessionData],
+        backend: DatabaseBackend,  # Use DatabaseBackend instead of InMemoryBackend
         auth_http_exception: HTTPException,
     ):
         self._identifier = identifier
@@ -72,6 +123,7 @@ class BasicVerifier(SessionVerifier[UUID, SessionData]):
 
     def verify_session(self, model: SessionData) -> bool:
         """If the session exists, it is valid"""
+        session_context.set(model)
         return True
 
  
@@ -168,3 +220,8 @@ async def del_session(response: Response, session_id: UUID = Depends(cookie)):
     await session_backend.delete(session_id)
     cookie.delete_from_response(response)
     return "deleted session"
+
+
+
+
+
