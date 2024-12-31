@@ -41,7 +41,7 @@ class SessionData(BaseModel):
     token_jira: Optional[str]
 
 class DatabaseBackend:
-    def __init__(self, db_session_factory, expiration_minutes=60*60*24):
+    def __init__(self, db_session_factory, expiration_minutes=60):
         self.db_session_factory = db_session_factory
         self.expiration_minutes = expiration_minutes
         
@@ -63,9 +63,9 @@ class DatabaseBackend:
         with self.db_session_factory() as db:
             db_session_store = db.query(database.SessionStoreBackend).filter(database.SessionStoreBackend.session_id == str(session_id)).first()
             db_expires_at = db_session_store.expires_at.replace(tzinfo=KST)
-            # if not db_session_store or (db_session_store.expires_at and db_expires_at < datetime.now(KST)):
+            if not db_session_store or (db_session_store.expires_at and db_expires_at < datetime.now(KST)):
             # 세션타임을 생각하지 않는다.
-            if not db_session_store :
+            # if not db_session_store :
                 return None
             return SessionData(**db_session_store.session_data)  # JSON column is directly deserialized
 

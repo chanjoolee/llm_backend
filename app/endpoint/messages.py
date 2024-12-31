@@ -533,6 +533,21 @@ async def create_message_stream(
     
     logger.info(f"create_message_stream: conversation instance ")
     logger.info(f"message: {message}")
+    
+    # Validation if db_conversation.llm_model is contained to conversation.llm_api.llm_model.
+    # llm_api.llm_model is like "gpt-4o,gpt-3.5".
+    # db_conversation.llm_model must be one of "gpt-4o,gpt-3.5"
+    if db_conversation is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    
+    valid_models = db_conversation.llm_api.llm_model.split(",")
+    if db_conversation.llm_model not in valid_models:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid LLM model. Model '{db_conversation.llm_model}' is not in allowed models: {valid_models}"
+        )
+    
+    
     conversation_instance = ConversationFactory.create_conversation(
         llm_api_provider=db_conversation.llm_api.llm_api_provider,
         llm_model=db_conversation.llm_model,

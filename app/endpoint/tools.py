@@ -16,6 +16,7 @@ from app.endpoint.login import cookie, SessionData, verifier
 import tempfile
 import shutil
 import requests
+from app.utils import utils
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -340,11 +341,25 @@ def get_gitlab_token(
     추후 table에서 가져오도록한다.
     """
     # token = os.getenv("GITLAB_TOKEN")
-    token = session_data.token_gitlab
+    token_from_session = session_data.token_gitlab
     
-    if not token:
-        raise HTTPException(status_code=500, detail="GitLab token not found")
-    return token
+    # user
+    db = SessionLocal()
+    db_user = db.query(database.User).filter(
+        database.db_comment_endpoint,
+        database.User.user_id == session_data.user_id
+    ).first()
+    
+    if not db_user:
+        db.close()
+        raise HTTPException(status_code=422, detail="User is not found")
+    
+    token_from_db = db_user.token_gitlab
+    db.close()
+    if utils.is_empty(token_from_db):
+        db.close()
+        raise HTTPException(status_code=422, detail="GitLab token not found")
+    return token_from_db
 
 @router.get(
     "/get_confluence_token",
@@ -357,11 +372,25 @@ def get_confluence_token(
     추후 table에서 가져오도록한다.
     """
     # token = os.getenv("GITLAB_TOKEN")
-    token = session_data.token_confluence
+    token_from_session = session_data.token_confluence
     
-    if not token:
-        raise HTTPException(status_code=500, detail="GitLab token not found")
-    return token
+    # user
+    db = SessionLocal()
+    db_user = db.query(database.User).filter(
+        database.db_comment_endpoint,
+        database.User.user_id == session_data.user_id
+    ).first()
+    
+    if not db_user:
+        db.close()
+        raise HTTPException(status_code=422, detail="User is not found")
+    
+    token_from_db = db_user.token_confluence
+    db.close()
+    if utils.is_empty(token_from_db):
+        db.close()
+        raise HTTPException(status_code=422, detail="GitLab token not found")
+    return token_from_db
 
 
 @router.get(

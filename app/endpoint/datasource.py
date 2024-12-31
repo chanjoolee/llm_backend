@@ -23,6 +23,8 @@ from app.endpoint.login import cookie , SessionData , verifier
 from app.database import SessionLocal , get_db
 import aiofiles
 import pydash
+
+from app.endpoint.tools import get_confluence_token, get_gitlab_token
 from .realtime_updates import broadcast_update
 from opensearchpy import OpenSearch
 import app.config
@@ -313,7 +315,7 @@ async def datasource_save_data(datasource_type, session_data, db_datasource, dat
         
     if datasource_type == DataSourceType.DOC_FILE:
         doc_file_path = db_datasource.file_path
-        if os.path.exists(doc_file_path):
+        if os.path.exists(doc_file_path): 
             save_task = await asyncio.to_thread(
                 data_source.save_data,
                 last_update_succeeded_at=get_iso_8601_current_time(),
@@ -321,14 +323,12 @@ async def datasource_save_data(datasource_type, session_data, db_datasource, dat
             )
         
     if datasource_type == DataSourceType.CONFLUENCE:
-        if utils.is_empty(session_data.token_confluence):
-            raise HTTPException(status_code=422, detail=f"Token of Confluence is required for {datasource_type.name} datasource type")
         
         save_task =  await asyncio.to_thread(
             data_source.save_data, 
             last_update_succeeded_at=get_iso_8601_current_time(),
             url=db_datasource.url ,
-            access_token=session_data.token_confluence,
+            access_token=get_confluence_token(session_data=session_data),
             space_key=db_datasource.space_key
         ) 
         
@@ -346,8 +346,6 @@ async def datasource_save_data(datasource_type, session_data, db_datasource, dat
         ) 
         
     if datasource_type == DataSourceType.GITLAB:
-        if utils.is_empty(session_data.token_gitlab):
-            raise HTTPException(status_code=422, detail=f"Token of Gitlab is required for {datasource_type.name} datasource type")
         save_task = await asyncio.to_thread(
             data_source.save_data,
             last_update_succeeded_at=get_iso_8601_current_time(),
@@ -355,18 +353,18 @@ async def datasource_save_data(datasource_type, session_data, db_datasource, dat
             namespace=db_datasource.namespace, 
             project_name = db_datasource.project_name,
             branch=db_datasource.branch,
-            private_token=session_data.token_gitlab) 
+            private_token=get_gitlab_token(session_data=session_data) 
+        )
         
     if datasource_type == DataSourceType.GITLAB_DISCUSSION:
-        if utils.is_empty(session_data.token_gitlab):
-            raise HTTPException(status_code=422, detail=f"Token of Gitlab is required for {datasource_type.name} datasource type")
         save_task = await asyncio.to_thread(
             data_source.save_data,
             last_update_succeeded_at=get_iso_8601_current_time(),
             url=db_datasource.url ,
             namespace=db_datasource.namespace, 
             project_name = db_datasource.project_name,
-            private_token=session_data.token_gitlab
+            private_token=get_gitlab_token(session_data=session_data)
+            # private_token=session_data.token_gitlab
         ) 
         
     if datasource_type == DataSourceType.URL:
@@ -658,12 +656,10 @@ async def datasource_update_data(session_data, db_datasource, data_source, datas
             )
         
     if datasource_type == DataSourceType.CONFLUENCE:
-        if utils.is_empty(session_data.token_confluence):
-            raise HTTPException(status_code=422, detail=f"Token of Confluence is required for {datasource_type.name} datasource type")
         save_task =  await asyncio.to_thread(
             data_source.update_data, 
             url=db_datasource.url ,
-            access_token=session_data.token_confluence,
+            access_token=get_confluence_token(session_data=session_data),
             space_key=db_datasource.space_key,
             since=since,
             last_update_succeeded_at=get_iso_8601_current_time()
@@ -686,32 +682,24 @@ async def datasource_update_data(session_data, db_datasource, data_source, datas
         ) 
         
     if datasource_type == DataSourceType.GITLAB:
-        if utils.is_empty(session_data.token_gitlab):
-            raise HTTPException(status_code=422, detail=f"Token of Gitlab is required for {datasource_type.name} datasource type")
-        # if os.path.exists(data_source.data_dir_path + '/0'):
-        #     data_size = get_total_file_size(data_source.data_dir_path + '/0')
         save_task = await asyncio.to_thread(
             data_source.update_data,
             url=db_datasource.url ,
             namespace=db_datasource.namespace, 
             project_name = db_datasource.project_name,
             branch=db_datasource.branch,
-            private_token=session_data.token_gitlab,
+            private_token=get_gitlab_token(session_data=session_data),
             since=since,
             last_update_succeeded_at=get_iso_8601_current_time()
         ) 
         
     if datasource_type == DataSourceType.GITLAB_DISCUSSION:
-        if utils.is_empty(session_data.token_gitlab):
-            raise HTTPException(status_code=422, detail=f"Token of Gitlab is required for {datasource_type.name} datasource type")
-        # if os.path.exists(data_source.data_dir_path + '/0'):
-        #     data_size = get_total_file_size(data_source.data_dir_path + '/0')
         save_task = await asyncio.to_thread(
             data_source.update_data,
             url=db_datasource.url ,
             namespace=db_datasource.namespace, 
             project_name = db_datasource.project_name,
-            private_token=session_data.token_gitlab,
+            private_token=get_gitlab_token(session_data=session_data),
             since=since,
             last_update_succeeded_at=get_iso_8601_current_time()
         ) 
@@ -954,10 +942,11 @@ def preview_datasource_sub(datasource_type,info_datasource, session_data ):
         doc_file_path=info_datasource.file_path)
     
     if datasource_type == DataSourceType.CONFLUENCE:
-        if utils.is_empty(session_data.token_confluence):
-            raise HTTPException(status_code=422, detail=f"Token of Confluence is required for {datasource_type.name} datasource type")
-        
-        preview_data = data_source.load_preview_data(url=info_datasource.url, access_token=session_data.token_confluence, space_key=info_datasource.space_key)
+        preview_data = data_source.load_preview_data(
+            url=info_datasource.url, 
+            access_token=get_confluence_token(session_data=session_data), 
+            space_key=info_datasource.space_key
+        )
     
     if datasource_type == DataSourceType.JIRA:
         if utils.is_empty(info_datasource.token):
@@ -965,15 +954,13 @@ def preview_datasource_sub(datasource_type,info_datasource, session_data ):
         preview_data = data_source.load_preview_data(url=info_datasource.url, access_token=info_datasource.token, project_key=info_datasource.project_key, start=info_datasource.start)
         
     if datasource_type == DataSourceType.GITLAB:
-        if utils.is_empty(session_data.token_gitlab):
-            raise HTTPException(status_code=422, detail=f"Token of Gitlab is required for {datasource_type.name} datasource type")   
         
         preview_data = data_source.load_preview_data(
             url=info_datasource.url,
             namespace=info_datasource.namespace,
             project_name=info_datasource.project_name,
             branch=info_datasource.branch,
-            private_token=session_data.token_gitlab
+            private_token=get_gitlab_token(session_data=session_data)
         )
         
     if datasource_type == DataSourceType.GITLAB_DISCUSSION:
