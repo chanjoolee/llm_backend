@@ -63,10 +63,10 @@ class DatabaseBackend:
         with self.db_session_factory() as db:
             db_session_store = db.query(database.SessionStoreBackend).filter(database.SessionStoreBackend.session_id == str(session_id)).first()
             db_expires_at = db_session_store.expires_at.replace(tzinfo=KST)
-            if not db_session_store or (db_session_store.expires_at and db_expires_at < datetime.now(KST)):
-            # 세션타임을 생각하지 않는다.
-            # if not db_session_store :
-                return None
+            # if not db_session_store or (db_session_store.expires_at and db_expires_at < datetime.now(KST)):
+            # # 세션타임을 생각하지 않는다.
+            # # if not db_session_store :
+            #     return None
             return SessionData(**db_session_store.session_data)  # JSON column is directly deserialized
 
 
