@@ -27,7 +27,12 @@ from ai_core.prompt.base import PromptComponent
 from ai_core.tool.base import load_tool
 from langgraph.checkpoint.mysql.aio import AIOMySQLSaver
 
-SUPPORTED_LLM_PROVIDERS = {LlmApiProvider.AI_ONE.value, LlmApiProvider.SMART_BEE.value, LlmApiProvider.AZURE.value}
+SUPPORTED_LLM_PROVIDERS = {
+    LlmApiProvider.AI_ONE.value,
+    LlmApiProvider.SMART_BEE.value,
+    LlmApiProvider.AZURE.value,
+    LlmApiProvider.OPENAI.value
+}
 
 
 class Conversation(BaseModel):

@@ -37,7 +37,9 @@ def create_chat_model(llm_api_provider: str = "ai_one",
         return _create_openai_chat_model(llm_api_key, llm_api_url, llm_model, temperature, max_tokens)
     elif llm_api_provider == LlmApiProvider.AI_ONE.value:
         return _create_anthropic_chat_model(llm_api_key, llm_api_url, llm_model, temperature, max_tokens)
-        # return _create_openai_chat_model(llm_api_key, llm_api_url, llm_model, temperature, max_tokens)
+
+    elif llm_api_provider == LlmApiProvider.OPENAI.value:
+        return _create_openai_chat_model(llm_api_key, llm_api_url, llm_model, temperature, max_tokens)
         # if llm_model.startswith('openai/'):
         #     return _create_openai_chat_model(llm_api_key, llm_api_url, llm_model, temperature, max_tokens)
         # elif llm_model.startswith('anthropic/'):

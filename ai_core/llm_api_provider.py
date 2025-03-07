@@ -6,3 +6,4 @@ class LlmApiProvider(Enum):
     AI_ONE = "ai_one"
     SMART_BEE = "smart_bee"
     TEST = "test"
+    OPENAI = "openai"

@@ -198,9 +198,12 @@ class AIOMySQLSaver(BaseMySQLSaver):
             where = "WHERE thread_id = %s AND checkpoint_ns = %s AND checkpoint_id = %s"
         else:
             args = (thread_id, checkpoint_ns)
-            where = "WHERE thread_id = %s AND checkpoint_ns = %s ORDER BY checkpoint_id DESC LIMIT 1"
+            where = """ WHERE thread_id = %s COLLATE utf8mb4_0900_ai_ci 
+                AND checkpoint_ns = %s COLLATE utf8mb4_0900_ai_ci 
+                ORDER BY checkpoint_id DESC LIMIT 1 """
 
         async with self._cursor() as cur:
+            await cur.execute("SET collation_connection = 'utf8mb4_0900_ai_ci'")
             await cur.execute(
                 self.SELECT_SQL + where,
                 args,
