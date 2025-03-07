@@ -2,3 +2,4 @@
 docs/build/
 installed_packages.txt
 ai_core/data/
+venv/
