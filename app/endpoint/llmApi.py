@@ -8,7 +8,9 @@ from datetime import datetime
 from app.utils import utils
 from app.endpoint.login import cookie , SessionData , verifier
 
-from app import models, database
+from app import database
+from app.model import model_llm
+from app.schema import schema_llm
 import pydash
 from app.database import SessionLocal, get_db
 
@@ -21,7 +23,7 @@ router = APIRouter()
 
 @router.post(
     "/",
-    response_model=models.LlmApi,
+    response_model=schema_llm.LlmApi,
     dependencies=[Depends(cookie)],
     tags=["LLM APIs"],
     description="""
@@ -36,8 +38,8 @@ router = APIRouter()
     - llm_api_key (Optional[str]): LLM Api Key
     """
 )
-def create_llm_api(llm_api: models.LlmApiCreate, db: Session = Depends(get_db) ,session_data: SessionData = Depends(verifier)):
-    db_llm_api = database.LlmApi(**llm_api.dict())
+def create_llm_api(llm_api: schema_llm.LlmApiCreate, db: Session = Depends(get_db) ,session_data: SessionData = Depends(verifier)):
+    db_llm_api = model_llm.LlmApi(**llm_api.dict())
     db_llm_api.create_user = session_data.user_id
     db.add(db_llm_api)
     db.flush()
@@ -46,7 +48,7 @@ def create_llm_api(llm_api: models.LlmApiCreate, db: Session = Depends(get_db) ,
 
 @router.get(
     "/",
-    response_model=List[models.LlmApi],
+    response_model=List[schema_llm.LlmApi],
     dependencies=[Depends(cookie)],
     # tags=["LLM APIs"],
     description="""
@@ -64,15 +66,15 @@ def read_llm_apis(
     db: Session = Depends(get_db) ,
     session_data: SessionData = Depends(verifier)
 ):
-    query = db.query(database.LlmApi)
+    query = db.query(model_llm.LlmApi)
     comment = text("/* is_endpoint_query */ 1=1")
     query = query.filter(comment) 
 
     if llm_api_type:
-        query = query.filter(database.LlmApi.llm_api_type == llm_api_type)
+        query = query.filter(model_llm.LlmApi.llm_api_type == llm_api_type)
         
     if llm_api_type and llm_api_type == 'private':
-        query = query.filter(database.LlmApi.create_user == session_data.user_id)
+        query = query.filter(model_llm.LlmApi.create_user == session_data.user_id)
         
     if skip is not None  and limit is not None :
         query = query.offset(skip).limit(limit)
@@ -81,7 +83,7 @@ def read_llm_apis(
 
 @router.get(
     "/public_and_private",
-    response_model=List[models.LlmApi],
+    response_model=List[schema_llm.LlmApi],
     dependencies=[Depends(cookie)],
     # tags=["LLM APIs"],
     description="""
@@ -89,16 +91,16 @@ def read_llm_apis(
     """
 )
 def read_public_and_private( db: Session = Depends(get_db) ,session_data: SessionData = Depends(verifier)):
-    query = db.query(database.LlmApi)
+    query = db.query(model_llm.LlmApi)
     comment = text("/* is_endpoint_query */ 1=1")
     query = query.filter(comment) 
     
     filter_llm_api_type = []
-    filter_llm_api_type.append(database.LlmApi.llm_api_type == 'public')
+    filter_llm_api_type.append(model_llm.LlmApi.llm_api_type == 'public')
     filter_llm_api_type.append(
         and_(
-            database.LlmApi.llm_api_type == 'private',
-            database.LlmApi.create_user == session_data.user_id
+            model_llm.LlmApi.llm_api_type == 'private',
+            model_llm.LlmApi.create_user == session_data.user_id
         )
     )
     query = query.filter(or_(*filter_llm_api_type))
@@ -107,7 +109,7 @@ def read_public_and_private( db: Session = Depends(get_db) ,session_data: Sessio
 
 @router.get(
     "/{llm_api_id}",
-    response_model=models.LlmApi,
+    response_model=schema_llm.LlmApi,
     dependencies=[Depends(cookie)],
     # tags=["LLM APIs"],
     description="""
@@ -115,14 +117,14 @@ def read_public_and_private( db: Session = Depends(get_db) ,session_data: Sessio
     """
 )
 def read_llm_api(llm_api_id: int, db: Session = Depends(get_db) ,session_data: SessionData = Depends(verifier)):
-    db_llm_api = db.query(database.LlmApi).filter(database.db_comment_endpoint).filter(database.LlmApi.llm_api_id == llm_api_id).first()
+    db_llm_api = db.query(model_llm.LlmApi).filter(model_llm.db_comment_endpoint).filter(model_llm.LlmApi.llm_api_id == llm_api_id).first()
     if db_llm_api is None:
         raise HTTPException(status_code=404, detail="LLM API not found")
     return db_llm_api
 
 @router.put(
     "/{llm_api_id}",
-    response_model=models.LlmApi,
+    response_model=schema_llm.LlmApi,
     dependencies=[Depends(cookie)],
     # tags=["LLM APIs"],
     description="""
@@ -137,8 +139,8 @@ def read_llm_api(llm_api_id: int, db: Session = Depends(get_db) ,session_data: S
     - llm_api_key (Optional[str]): LLM Api Key
     """
 )
-def update_llm_api(llm_api_id: int, llm_api: models.LlmApiUpdate, db: Session = Depends(get_db) ,session_data: SessionData = Depends(verifier)):
-    db_llm_api = db.query(database.LlmApi).filter(database.db_comment_endpoint).filter(database.LlmApi.llm_api_id == llm_api_id).first()
+def update_llm_api(llm_api_id: int, llm_api: schema_llm.LlmApiUpdate, db: Session = Depends(get_db) ,session_data: SessionData = Depends(verifier)):
+    db_llm_api = db.query(model_llm.LlmApi).filter(model_llm.db_comment_endpoint).filter(model_llm.LlmApi.llm_api_id == llm_api_id).first()
     if db_llm_api is None:
         raise HTTPException(status_code=404, detail="LLM API not found")
     update_data = llm_api.dict(exclude_unset=True)
@@ -151,7 +153,7 @@ def update_llm_api(llm_api_id: int, llm_api: models.LlmApiUpdate, db: Session = 
 
 @router.delete(
     "/{llm_api_id}",
-    response_model=models.LlmApi,
+    response_model=schema_llm.LlmApi,
     dependencies=[Depends(cookie)],
     # tags=["LLM APIs"],
     description="""
@@ -159,7 +161,7 @@ def update_llm_api(llm_api_id: int, llm_api: models.LlmApiUpdate, db: Session = 
     """
 )
 def delete_llm_api(llm_api_id: int, db: Session = Depends(get_db) ,session_data: SessionData = Depends(verifier)):
-    db_llm_api = db.query(database.LlmApi).filter(database.db_comment_endpoint).filter(database.LlmApi.llm_api_id == llm_api_id).first()
+    db_llm_api = db.query(model_llm.LlmApi).filter(model_llm.db_comment_endpoint).filter(model_llm.LlmApi.llm_api_id == llm_api_id).first()
     if db_llm_api is None:
         raise HTTPException(status_code=404, detail="LLM API not found")
 
@@ -171,14 +173,14 @@ def delete_llm_api(llm_api_id: int, db: Session = Depends(get_db) ,session_data:
 
 
     # Convert to Pydantic model before deleting
-    deleted_data = models.LlmApi.from_orm(db_llm_api)
+    deleted_data = schema_llm.LlmApi.from_orm(db_llm_api)
     db.delete(db_llm_api)
     db.flush()
     return deleted_data
 
 @router.delete(
     "/",
-    response_model=List[models.LlmApi],
+    response_model=List[schema_llm.LlmApi],
     dependencies=[Depends(cookie)],
     # tags=["LLM APIs"],
     description="""
@@ -190,8 +192,8 @@ def delete_llm_api(llm_api_id: int, db: Session = Depends(get_db) ,session_data:
     - limit (Optional[int]): The maximum number of records to return for pagination after deletion.
     """
 )
-def delete_multiple_llm_api(param_delete:models.LlmApiDelete , db: Session = Depends(get_db), session_data: SessionData = Depends(verifier)):
-    llm_apis_to_delete = db.query(database.LlmApi).filter(database.db_comment_endpoint).filter(database.LlmApi.llm_api_id.in_(param_delete.llm_api_ids)).all()
+def delete_multiple_llm_api(param_delete:schema_llm.LlmApiDelete , db: Session = Depends(get_db), session_data: SessionData = Depends(verifier)):
+    llm_apis_to_delete = db.query(model_llm.LlmApi).filter(model_llm.db_comment_endpoint).filter(model_llm.LlmApi.llm_api_id.in_(param_delete.llm_api_ids)).all()
     if not llm_apis_to_delete:
         raise HTTPException(status_code=404, detail="Tags not found")
     
@@ -203,7 +205,7 @@ def delete_multiple_llm_api(param_delete:models.LlmApiDelete , db: Session = Dep
         db.flush()
     
     
-    query = db.query(database.LlmApi).filter(database.db_comment_endpoint)
+    query = db.query(model_llm.LlmApi).filter(model_llm.db_comment_endpoint)
     comment = text("/* is_endpoint_query */ 1=1")
     query = query.filter(comment) 
 
@@ -216,7 +218,7 @@ def delete_multiple_llm_api(param_delete:models.LlmApiDelete , db: Session = Dep
 
 @router.post(
     "/search",
-    response_model=models.SearchLlmApiResponse,
+    response_model=schema_llm.SearchLlmApiResponse,
     dependencies=[Depends(cookie)],
     # tags=["LLM APIs"],
     description="""
@@ -239,12 +241,12 @@ def delete_multiple_llm_api(param_delete:models.LlmApiDelete , db: Session = Dep
     """
 )
 def search_llm_api(   
-    search : models.LlmApiSearch, 
+    search : schema_llm.LlmApiSearch, 
     db: Session = Depends(get_db),
     session_data: SessionData = Depends(verifier)
 ):
     search_exclude = search.dict(exclude_unset=True)
-    query = db.query(database.LlmApi).filter(database.db_comment_endpoint)
+    query = db.query(model_llm.LlmApi).filter(model_llm.db_comment_endpoint)
     comment = text("/* is_endpoint_query */ 1=1")
     query = query.filter(comment) 
     
@@ -253,35 +255,35 @@ def search_llm_api(
         if search_exclude['search_field'] == '전체':
             query = query.filter(
                 or_(
-                    database.LlmApi.llm_api_name.ilike(f"%{search_exclude['search_words']}%"),
-                    database.LlmApi.llm_api_provider.ilike(f"%{search_exclude['search_words']}%"),
-                    database.LlmApi.llm_api_url.ilike(f"%{search_exclude['search_words']}%"),
-                    database.LlmApi.llm_api_key.ilike(f"%{search_exclude['search_words']}%"),
-                    database.LlmApi.llm_model.ilike(f"%{search_exclude['search_words']}%"),
-                    database.LlmApi.embedding_model.ilike(f"%{search_exclude['search_words']}%"),
+                    model_llm.LlmApi.llm_api_name.ilike(f"%{search_exclude['search_words']}%"),
+                    model_llm.LlmApi.llm_api_provider.ilike(f"%{search_exclude['search_words']}%"),
+                    model_llm.LlmApi.llm_api_url.ilike(f"%{search_exclude['search_words']}%"),
+                    model_llm.LlmApi.llm_api_key.ilike(f"%{search_exclude['search_words']}%"),
+                    model_llm.LlmApi.llm_model.ilike(f"%{search_exclude['search_words']}%"),
+                    model_llm.LlmApi.embedding_model.ilike(f"%{search_exclude['search_words']}%"),
                 )
             )
         elif search_exclude['search_field'] == 'llm_api_name': # LLM API 이름
-            query = query.filter(database.LlmApi.llm_api_name.ilike(f"%{search_exclude['search_words']}%"))
+            query = query.filter(model_llm.LlmApi.llm_api_name.ilike(f"%{search_exclude['search_words']}%"))
         elif search_exclude['search_field'] == 'llm_api_provider': # LLM API 제공자
-            query = query.filter(database.LlmApi.llm_api_provider.ilike(f"%{search_exclude['search_words']}%"))
+            query = query.filter(model_llm.LlmApi.llm_api_provider.ilike(f"%{search_exclude['search_words']}%"))
         elif search_exclude['search_field'] == 'llm_api_url': # LLM API 주소
-            query = query.filter(database.LlmApi.llm_api_url.ilike(f"%{search_exclude['search_words']}%"))
+            query = query.filter(model_llm.LlmApi.llm_api_url.ilike(f"%{search_exclude['search_words']}%"))
         elif search_exclude['search_field'] == 'llm_api_key': # LLM API 키
-            query = query.filter(database.LlmApi.llm_api_key.ilike(f"%{search_exclude['search_words']}%"))
+            query = query.filter(model_llm.LlmApi.llm_api_key.ilike(f"%{search_exclude['search_words']}%"))
         elif search_exclude['search_field'] == 'llm_model': # 텍스트 생성 모델
-            query = query.filter(database.LlmApi.llm_model.ilike(f"%{search_exclude['search_words']}%"))
+            query = query.filter(model_llm.LlmApi.llm_model.ilike(f"%{search_exclude['search_words']}%"))
         elif search_exclude['search_field'] == 'embedding_model': # 임베딩 모델
-            query = query.filter(database.LlmApi.embedding_model.ilike(f"%{search_exclude['search_words']}%"))
+            query = query.filter(model_llm.LlmApi.embedding_model.ilike(f"%{search_exclude['search_words']}%"))
     
     # Apply llm_api_type filter private public
     if 'llm_api_type' in search_exclude:
-        query = query.filter(database.LlmApi.llm_api_type == search_exclude['llm_api_type'])
+        query = query.filter(model_llm.LlmApi.llm_api_type == search_exclude['llm_api_type'])
     
     # 사용자 필터링
     user_filter_basic = [
-        database.LlmApi.create_user == session_data.user_id
-        # , database.Conversation.conversation_type == 'public'
+        model_llm.LlmApi.create_user == session_data.user_id
+        # , model_llm.Conversation.conversation_type == 'public'
     ]
     query = query.filter(or_(*user_filter_basic))
     
@@ -293,7 +295,7 @@ def search_llm_api(
         
     results = query.all()
     
-    return models.SearchLlmApiResponse(totalCount=total_count, list=results)
+    return schema_llm.SearchLlmApiResponse(totalCount=total_count, list=results)
 
 
 
@@ -302,7 +304,7 @@ class LlmApiNameRequest(BaseModel):
 
 @router.post(
     "/check_name",
-    response_model=models.SearchLlmApiResponse,
+    response_model=schema_llm.SearchLlmApiResponse,
     dependencies=[Depends(cookie)],  # Adjust this dependency based on your auth implementation
     description="""
     지정된 이름을 가진 LLM API가 존재하는지 확인합니다. 
@@ -313,14 +315,14 @@ def check_llm_api_name(request: LlmApiNameRequest, db: Session = Depends(get_db)
     """
     지정된 이름을 가진 LLM API가 존재하는지 확인하고, 결과를 리스트 형식으로 반환합니다.
     """
-    query = db.query(database.LlmApi).filter(
-        database.db_comment_endpoint ,
-        database.LlmApi.llm_api_name == request.name
+    query = db.query(model_llm.LlmApi).filter(
+        model_llm.db_comment_endpoint ,
+        model_llm.LlmApi.llm_api_name == request.name
     )
     total_count = query.count()
     results = query.all()  # Fetch all matching records
 
-    return models.SearchLlmApiResponse(
+    return schema_llm.SearchLlmApiResponse(
         totalCount=total_count,
         list=results
     )

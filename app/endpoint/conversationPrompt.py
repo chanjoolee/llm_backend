@@ -5,6 +5,8 @@ from pydantic import BaseModel, Field
 from typing import List, Optional
 from app.database import SessionLocal, get_db
 from app import models, database
+from app.model import model_llm
+from app.schema import schema_llm
 from sqlalchemy import func , text , select , exists
 
 
@@ -48,9 +50,9 @@ class ConversationPrompt(ConversationPromptBase):
     """
 )
 def create_conversation_prompt(cp: ConversationPromptCreate, db: Session = Depends(get_db)):
-    db_cp = models.ConversationPrompt(**cp.dict())
+    db_cp = schema_llm.ConversationPrompt(**cp.dict())
     # Fetch the current maximum sort_order for the given conversation_id
-    max_sort_order = db.query(func.max(database.conversation_prompt.c.sort_order)).filter(database.db_comment_endpoint).filter(database.conversation_prompt.c.conversation_id == cp.conversation_id).scalar()
+    max_sort_order = db.query(func.max(model_llm.conversation_prompt.c.sort_order)).filter(model_llm.db_comment_endpoint).filter(model_llm.conversation_prompt.c.conversation_id == cp.conversation_id).scalar()
 
     # Increment the sort_order
     next_sort_order = 1 if max_sort_order is None else max_sort_order + 1
@@ -76,7 +78,7 @@ def create_conversation_prompt(cp: ConversationPromptCreate, db: Session = Depen
     """
 )
 def read_conversation_prompts(skip: int = 0, limit: int = 10, db: Session = Depends(get_db)):
-    results = db.query(models.ConversationPrompt).filter(database.db_comment_endpoint).offset(skip).limit(limit).all()
+    results = db.query(schema_llm.ConversationPrompt).filter(model_llm.db_comment_endpoint).offset(skip).limit(limit).all()
     return results
 
 # Update ConversationPrompt entry
@@ -96,10 +98,10 @@ def read_conversation_prompts(skip: int = 0, limit: int = 10, db: Session = Depe
     """
 )
 def update_conversation_prompt(conversation_id: str, prompt_id: int, cp: ConversationPromptUpdate, db: Session = Depends(get_db)):
-    db_cp = db.query(models.ConversationPrompt).filter(
-        models.ConversationPrompt.conversation_id == conversation_id,
-        models.ConversationPrompt.prompt_id == prompt_id
-    ).filter(database.db_comment_endpoint).first()
+    db_cp = db.query(schema_llm.ConversationPrompt).filter(
+        schema_llm.ConversationPrompt.conversation_id == conversation_id,
+        schema_llm.ConversationPrompt.prompt_id == prompt_id
+    ).filter(model_llm.db_comment_endpoint).first()
     
     if db_cp is None:
         raise HTTPException(status_code=404, detail="Association not found")
@@ -126,10 +128,10 @@ def update_conversation_prompt(conversation_id: str, prompt_id: int, cp: Convers
     """
 )
 def delete_conversation_prompt(conversation_id: str, prompt_id: int, db: Session = Depends(get_db)):
-    db_cp = db.query(models.ConversationPrompt).filter(
-        models.ConversationPrompt.conversation_id == conversation_id,
-        models.ConversationPrompt.prompt_id == prompt_id
-    ).filter(database.db_comment_endpoint).first()
+    db_cp = db.query(schema_llm.ConversationPrompt).filter(
+        schema_llm.ConversationPrompt.conversation_id == conversation_id,
+        schema_llm.ConversationPrompt.prompt_id == prompt_id
+    ).filter(model_llm.db_comment_endpoint).first()
     
     if db_cp is None:
         raise HTTPException(status_code=404, detail="Association not found")

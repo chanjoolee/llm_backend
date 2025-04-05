@@ -6,7 +6,9 @@ from sqlalchemy.orm import Session
 from sqlalchemy import or_, text
 from app.endpoint.login import cookie , SessionData , verifier
 
-from app import models, database
+from app import database
+from app.model import model_llm
+from app.schema import schema_llm
 from app.database import SessionLocal, get_db
 import pydash
 
@@ -18,7 +20,7 @@ router = APIRouter()
 
 @router.post(
     "/",
-    response_model=models.Tag,
+    response_model=schema_llm.Tag,
     dependencies=[Depends(cookie)],
     # tags=["Tags"],
     description="""
@@ -29,8 +31,8 @@ router = APIRouter()
     - background_color (Optional[str]): The background color of the tag.
     """
 )
-def create_tag(tag: models.TagCreate, db: Session = Depends(get_db),session_data: SessionData = Depends(verifier)):
-    db_tag = database.Tag(name=tag.name, background_color=tag.background_color)
+def create_tag(tag: schema_llm.TagCreate, db: Session = Depends(get_db),session_data: SessionData = Depends(verifier)):
+    db_tag = model_llm.Tag(name=tag.name, background_color=tag.background_color)
     db_tag.create_user = session_data.user_id
     db.add(db_tag)
     db.flush()
@@ -39,7 +41,7 @@ def create_tag(tag: models.TagCreate, db: Session = Depends(get_db),session_data
 
 @router.get(
     "/",
-    response_model=models.SearchTagResponse,
+    response_model=schema_llm.SearchTagResponse,
     dependencies=[Depends(cookie)],
     # tags=["Tags"],
     description="""
@@ -51,36 +53,36 @@ def create_tag(tag: models.TagCreate, db: Session = Depends(get_db),session_data
     """
 )
 def read_tags(skip: Optional[int] = 0, limit: Optional[int] = 10, db: Session = Depends(get_db),session_data: SessionData = Depends(verifier)):
-    query = db.query(database.Tag)
+    query = db.query(model_llm.Tag)
     comment = text("/* is_endpoint_query */ 1=1")
     query = query.filter(comment) 
     
     total_count = query.count()
-    query = query.order_by(database.Tag.updated_at.desc(),database.Tag.created_at.desc())
+    query = query.order_by(model_llm.Tag.updated_at.desc(),model_llm.Tag.created_at.desc())
     if skip is not None  and limit is not None :
         query = query.offset(skip).limit(limit)
         
     results = query.all()
     tags =query.all()
     
-    return models.SearchTagResponse(totalCount=total_count, list=results)
+    return schema_llm.SearchTagResponse(totalCount=total_count, list=results)
 
 @router.get(
     "/{tag_id}",
-    response_model=models.Tag,
+    response_model=schema_llm.Tag,
     dependencies=[Depends(cookie)],
     # tags=["Tags"],
     description="Retrieves a specific tag by its ID."
 )
 def read_tag(tag_id: int, db: Session = Depends(get_db),session_data: SessionData = Depends(verifier)):
-    tag = db.query(database.Tag).filter(database.db_comment_endpoint).filter(database.Tag.tag_id == tag_id).first()
+    tag = db.query(model_llm.Tag).filter(model_llm.db_comment_endpoint).filter(model_llm.Tag.tag_id == tag_id).first()
     if tag is None:
         raise HTTPException(status_code=404, detail="Tag not found")
     return tag
 
 @router.put(
     "/{tag_id}",
-    response_model=models.Tag,
+    response_model=schema_llm.Tag,
     dependencies=[Depends(cookie)],
     # tags=["Tags"],
     description="""
@@ -92,8 +94,8 @@ def read_tag(tag_id: int, db: Session = Depends(get_db),session_data: SessionDat
     - update_user (Optional[str]): The user updating the tag.
     """
 )
-def update_tag(tag_id: int, tag: models.TagUpdate, db: Session = Depends(get_db),session_data: SessionData = Depends(verifier)):
-    db_tag = db.query(database.Tag).filter(database.db_comment_endpoint).filter(database.Tag.tag_id == tag_id).first()
+def update_tag(tag_id: int, tag: schema_llm.TagUpdate, db: Session = Depends(get_db),session_data: SessionData = Depends(verifier)):
+    db_tag = db.query(model_llm.Tag).filter(model_llm.db_comment_endpoint).filter(model_llm.Tag.tag_id == tag_id).first()
     if db_tag is None:
         raise HTTPException(status_code=404, detail="Tag not found")
     
@@ -111,12 +113,12 @@ def update_tag(tag_id: int, tag: models.TagUpdate, db: Session = Depends(get_db)
 
 @router.delete(
     "/{tag_id}",
-    response_model=models.Tag,
+    response_model=schema_llm.Tag,
     tags=["Tags"],
     description="Deletes a specific tag by its ID."
 )
 def delete_tag(tag_id: int, db: Session = Depends(get_db)):
-    db_tag = db.query(database.Tag).filter(database.db_comment_endpoint).filter(database.Tag.tag_id == tag_id).first()
+    db_tag = db.query(model_llm.Tag).filter(model_llm.db_comment_endpoint).filter(model_llm.Tag.tag_id == tag_id).first()
     if db_tag is None:
         raise HTTPException(status_code=404, detail="Tag not found")
     db.delete(db_tag)
@@ -125,7 +127,7 @@ def delete_tag(tag_id: int, db: Session = Depends(get_db)):
 
 @router.delete(
     "/",
-    response_model=List[models.Tag],
+    response_model=List[schema_llm.Tag],
     tags=["Tags"],
     description="""
     Deletes multiple tags by their IDs.
@@ -136,8 +138,8 @@ def delete_tag(tag_id: int, db: Session = Depends(get_db)):
     - limit (Optional[int]): The maximum number of records to return for pagination after deletion.
     """
 )
-def delete_multiple_tags(tag_delete:models.TagDelete , db: Session = Depends(get_db)):
-    tags_to_delete = db.query(database.Tag).filter(database.Tag.tag_id.in_(tag_delete.tag_ids)).all()
+def delete_multiple_tags(tag_delete:schema_llm.TagDelete , db: Session = Depends(get_db)):
+    tags_to_delete = db.query(model_llm.Tag).filter(model_llm.Tag.tag_id.in_(tag_delete.tag_ids)).all()
     if not tags_to_delete:
         raise HTTPException(status_code=404, detail="Tags not found")
     
@@ -145,7 +147,7 @@ def delete_multiple_tags(tag_delete:models.TagDelete , db: Session = Depends(get
         db.delete(tag)
     db.flush()
     
-    query = db.query(database.Tag)
+    query = db.query(model_llm.Tag)
     comment = text("/* is_endpoint_query */ 1=1")
     query = query.filter(comment) 
 
@@ -157,7 +159,7 @@ def delete_multiple_tags(tag_delete:models.TagDelete , db: Session = Depends(get
 
 @router.post(
     "/search",
-    response_model=models.SearchTagResponse,
+    response_model=schema_llm.SearchTagResponse,
     dependencies=[Depends(cookie)],
     # tags=["LLM APIs"],
     description="""
@@ -168,27 +170,27 @@ def delete_multiple_tags(tag_delete:models.TagDelete , db: Session = Depends(get
     """
 )
 def search_tags(   
-    search : models.TagSearch, 
+    search : schema_llm.TagSearch, 
     db: Session = Depends(get_db),
     session_data: SessionData = Depends(verifier)
 ):
     search_exclude = search.dict(exclude_unset=True)
     
-    query = db.query(database.Tag)
+    query = db.query(model_llm.Tag)
     comment = text("/* is_endpoint_query */ 1=1")
     query = query.filter(comment) 
     
     if 'search_words' in search_exclude and search_exclude['search_words']:
-        query = query.filter(database.Tag.name.ilike(f"%{search_exclude["search_words"]}%"))
+        query = query.filter(model_llm.Tag.name.ilike(f"%{search_exclude["search_words"]}%"))
     
     total_count = query.count()
-    query = query.order_by(database.Tag.updated_at.desc(),database.Tag.created_at.desc())
+    query = query.order_by(model_llm.Tag.updated_at.desc(),model_llm.Tag.created_at.desc())
     if 'skip' in search_exclude and 'limit' in search_exclude:
         query = query.offset(search_exclude['skip']).limit(search_exclude['limit'])
     
     results = query.all()
     
-    return models.SearchTagResponse(totalCount=total_count, list=results)
+    return schema_llm.SearchTagResponse(totalCount=total_count, list=results)
 
 
 
@@ -197,7 +199,7 @@ class TagNameRequest(BaseModel):
 
 @router.post(
     "/check_name",
-    response_model=models.SearchTagResponse,  # Adjust the response model to the correct one for tags
+    response_model=schema_llm.SearchTagResponse,  # Adjust the response model to the correct one for tags
     dependencies=[Depends(cookie)],  # Adjust this dependency based on your authentication setup
     description="""
     지정된 이름을 가진 태그가 존재하는지 확인합니다. 
@@ -208,14 +210,14 @@ def check_tag_name(request: TagNameRequest, db: Session = Depends(get_db)):
     """
     지정된 이름을 가진 태그가 존재하는지 확인하고, 결과를 리스트 형식으로 반환합니다.
     """
-    query = db.query(database.Tag).filter(
-        database.db_comment_endpoint ,
-        database.Tag.name == request.name
+    query = db.query(model_llm.Tag).filter(
+        model_llm.db_comment_endpoint ,
+        model_llm.Tag.name == request.name
     )
     total_count = query.count()
     results = query.all()  # Fetch all matching records
 
-    return models.SearchTagResponse(
+    return schema_llm.SearchTagResponse(
         totalCount=total_count,
         list=results
     )

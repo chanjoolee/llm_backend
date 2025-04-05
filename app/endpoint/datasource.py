@@ -17,7 +17,9 @@ from ai_core.data_source.utils.utils import create_collection_name, create_data_
 from ai_core.data_source.model.document import Document
 from ai_core import AI_CORE_ROOT_DIR ,CHROMA_DB_DEFAULT_PERSIST_DIR , CHROMA_DB_TEST_DATA_PATH , DATA_SOURCE_SAVE_BASE_DIR
 from ai_core.llm_api_provider import LlmApiProvider
-from app import models, database
+from app import database
+from app.model import model_llm
+from app.schema import schema_llm
 from app.utils import utils
 from app.endpoint.login import cookie , SessionData , verifier
 from app.database import SessionLocal , get_db
@@ -77,7 +79,7 @@ async def async_wrap(generator):
 
 @router.post(
     "/",
-    response_model=models.Datasource,
+    response_model=schema_llm.Datasource,
     dependencies=[Depends(cookie)],
     description="""<pre>
     Creates a new data source.  model: DatasourceCreate
@@ -137,7 +139,7 @@ async def datasource_create(
     base_url: Optional[str] = Form(None, description="Base URL for URL data source"),
     max_depth: Optional[int] = Form(None, description="Maximum depth for URL crawling"),
     tag_ids: Optional[str] = Form(None,description="Comma-separated list of tag IDs"),
-    # payload: models.DatasourceCreate ,
+    # payload: schema_llm.DatasourceCreate ,
     file: Annotated[UploadFile ,File(description="File path for document or PDF")] = None,  # File upload
     db: Session = Depends(database.get_db),
     session_data: SessionData = Depends(verifier)
@@ -178,8 +180,8 @@ async def datasource_create(
 
     # Check if a DataSource with the same name already exists
     existing_datasource = (
-        db.query(database.DataSource)
-        .filter(database.DataSource.datasource_id == datasource_id)
+        db.query(model_llm.DataSource)
+        .filter(model_llm.DataSource.datasource_id == datasource_id)
         .filter(comment)  
     ).first()
     if existing_datasource:
@@ -187,7 +189,7 @@ async def datasource_create(
 
     # DB
     # Create a new DataSource instance
-    db_datasource = database.DataSource(
+    db_datasource = model_llm.DataSource(
         datasource_id=datasource_id,
         create_user=session_data.user_id
     )
@@ -203,7 +205,7 @@ async def datasource_create(
     if 'tag_ids' in update_data and len(update_data['tag_ids']) >= 0 :
         tag_ids_list = tag_ids.split(',')
         for tag_id in tag_ids_list:
-            db_tag = db.query(database.Tag).filter(comment).filter(database.db_comment_endpoint).filter(database.Tag.tag_id == tag_id).first()
+            db_tag = db.query(model_llm.Tag).filter(comment).filter(model_llm.db_comment_endpoint).filter(model_llm.Tag.tag_id == tag_id).first()
             if db_tag:
                 db_datasource.tags.append(db_tag)
 
@@ -241,7 +243,7 @@ async def datasource_create(
 
     
     #  before start task of opensearch , apply to db. if there is error , do not  execute_save_data
-    db_datasource.status = database.DatasourceDownloadStatus.downloading
+    db_datasource.status = model_llm.DatasourceDownloadStatus.downloading
     db.commit()
     # Schedule the execution and apply the callback
     task = asyncio.create_task(datasource_save_data(datasource_type, session_data, db_datasource, data_source) )
@@ -254,37 +256,37 @@ async def datasource_create(
 def datasource_save_data_callback(future,session_data, datasource_id):
     logger.info("Datasource Indexing Completed")  
     logger.info("Datasource Callback Started")  
-    db_callback = database.SessionLocal()
+    db_callback = model_llm.SessionLocal()
     try:
-        db_datasource = db_callback.query(database.DataSource).filter(database.db_comment_endpoint).filter(database.DataSource.datasource_id == datasource_id).first()
+        db_datasource = db_callback.query(model_llm.DataSource).filter(model_llm.db_comment_endpoint).filter(model_llm.DataSource.datasource_id == datasource_id).first()
         if future.exception():
             logging.error(f"Datasource task failed: {future.exception()}")
-            db_datasource.status = database.DatasourceDownloadStatus.error
+            db_datasource.status = model_llm.DatasourceDownloadStatus.error
         else:
             # embeded, total = future.result()
             # logger.info("Embedding task completed. Number of chunks embedded / Total: ", str(embeded), " / ", str(total))
             result =  future.result()
-            db_datasource.downloaded_at = datetime.now(database.KST)
-            # db_datasource.uploaded_at = datetime.now(database.KST)
-            db_datasource.status = database.DatasourceDownloadStatus.downloaded
+            db_datasource.downloaded_at = datetime.now(model_llm.KST)
+            # db_datasource.uploaded_at = datetime.now(model_llm.KST)
+            db_datasource.status = model_llm.DatasourceDownloadStatus.downloaded
         
         
     except Exception as e:
-        db_datasource.status = database.DatasourceDownloadStatus.error
+        db_datasource.status = model_llm.DatasourceDownloadStatus.error
         logger.error(f"Datasource download failed: {e}")
         
     except asyncio.exceptions.CancelledError as e:
-        db_datasource.status = database.DatasourceDownloadStatus.cancelled
+        db_datasource.status = model_llm.DatasourceDownloadStatus.cancelled
         # db_embedding.status_message = traceback.format_exc()
         logging.error(f"Datasource download cancelled: {e}")
         
     finally:
-        db_datasource.updated_at = datetime.now(database.KST)
+        db_datasource.updated_at = datetime.now(model_llm.KST)
         db_datasource.update_user = session_data.user_id
         
         update_message = {
             "type": "datasource_update",
-            "data": models.Datasource.from_orm(db_datasource).dict()
+            "data": schema_llm.Datasource.from_orm(db_datasource).dict()
         }
         asyncio.create_task(broadcast_update(update_message))
         # active_tasks 해제
@@ -426,7 +428,7 @@ def validate_datasource(datasource_type : DataSourceType, namespace, project_nam
 
 @router.put(
     "/{datasource_id}",
-    response_model=models.Datasource,
+    response_model=schema_llm.Datasource,
     dependencies=[Depends(cookie)],
     description="""
     Update an existing data source using multipart form data.
@@ -437,7 +439,7 @@ async def update_datasource(
     datasource_id: str,
     name: Optional[str] = Form(None, description="Name of the data source"),
     description: Optional[str] = Form(None, description="Description of the data source"),
-    visibility: Optional[models.Visibility] = Form(None, description="Visibility of the data source: private or public"),
+    visibility: Optional[schema_llm.Visibility] = Form(None, description="Visibility of the data source: private or public"),
     datasource_type: Optional[DataSourceType] = Form(None, description="Type of the data source (e.g., text, pdf_file, confluence, gitlab, gitlab_discussion, url, doc_file, jira)"),
     namespace: Optional[str] = Form(None, description="Namespace for GitLab projects"),
     project_name: Optional[str] = Form(None, description="Project name in GitLab"),
@@ -466,7 +468,7 @@ async def update_datasource(
     session_data: SessionData = Depends(verifier)
 ):
     # Fetch the existing datasource from the database
-    db_datasource = db.query(database.DataSource).filter(database.db_comment_endpoint).filter(database.DataSource.datasource_id == datasource_id).first()
+    db_datasource = db.query(model_llm.DataSource).filter(model_llm.db_comment_endpoint).filter(model_llm.DataSource.datasource_id == datasource_id).first()
     if not db_datasource:
         raise HTTPException(status_code=404, detail="DataSource not found")
     
@@ -507,7 +509,7 @@ async def update_datasource(
         db_datasource.tags = []
         tag_ids_list = tag_ids.split(',')
         for tag_id in tag_ids_list:
-            db_tag = db.query(database.Tag).filter(database.db_comment_endpoint).filter(database.Tag.tag_id == tag_id).first()
+            db_tag = db.query(model_llm.Tag).filter(model_llm.db_comment_endpoint).filter(model_llm.Tag.tag_id == tag_id).first()
             if db_tag:
                 db_datasource.tags.append(db_tag)
                 
@@ -542,14 +544,14 @@ async def update_datasource(
 )
 async def datasource_redownload(
     datasource_id: str,
-    db: Session = Depends(database.get_db_async),
+    db: Session = Depends(database.get_db),
     session_data: SessionData = Depends(verifier)
 ):
     
     logger.info(f"Data Redownload started : {datasource_id}")
     global active_tasks
     
-    db_datasource = db.query(database.DataSource).filter(database.db_comment_endpoint).filter(database.DataSource.datasource_id == datasource_id).first()
+    db_datasource = db.query(model_llm.DataSource).filter(model_llm.db_comment_endpoint).filter(model_llm.DataSource.datasource_id == datasource_id).first()
     if not db_datasource:
             raise HTTPException(status_code=404, detail="DataSource not found")
     
@@ -566,10 +568,10 @@ async def datasource_redownload(
        
     #  before start task of opensearch , apply to db. if there is error , do not  execute_save_data
     before_staus = db_datasource.status
-    db_datasource.status = database.DatasourceDownloadStatus.downloading
+    db_datasource.status = model_llm.DatasourceDownloadStatus.downloading
     db.commit()
     # Schedule the execution and apply the callback
-    if before_staus == database.DatasourceDownloadStatus.downloaded:
+    if before_staus == model_llm.DatasourceDownloadStatus.downloaded:
         task = asyncio.create_task(datasource_update_data(session_data, db_datasource, data_source, datasource_type))
         task.add_done_callback(lambda future: datasource_update_data_callback(future,datasource_id, session_data))
     else: 
@@ -582,34 +584,34 @@ async def datasource_redownload(
 def datasource_update_data_callback(future, datasource_id, session_data):
     logger.info("Datasource Re Indexing Completed")  
     logger.info("Datasource Callback Started")  
-    db_callback = database.SessionLocal()
+    db_callback = model_llm.SessionLocal()
     try:
-        db_datasource = db_callback.query(database.DataSource).filter(database.db_comment_endpoint).filter(database.DataSource.datasource_id == datasource_id).first()
+        db_datasource = db_callback.query(model_llm.DataSource).filter(model_llm.db_comment_endpoint).filter(model_llm.DataSource.datasource_id == datasource_id).first()
         if future.exception():
             logging.error(f"Datasource task failed: {future.exception()}")
-            db_datasource.status = database.DatasourceDownloadStatus.error
+            db_datasource.status = model_llm.DatasourceDownloadStatus.error
         else:
             result =  future.result()
-            db_datasource.downloaded_at = datetime.now(database.KST)
-            db_datasource.status = database.DatasourceDownloadStatus.downloaded
+            db_datasource.downloaded_at = datetime.now(model_llm.KST)
+            db_datasource.status = model_llm.DatasourceDownloadStatus.downloaded
         
         
     except Exception as e:
-        db_datasource.status = database.DatasourceDownloadStatus.errordk
+        db_datasource.status = model_llm.DatasourceDownloadStatus.errordk
         logger.error(f"Datasource Re download failed: {e}")
         
     except asyncio.exceptions.CancelledError as e:
-        db_datasource.status = database.DatasourceDownloadStatus.cancelled
+        db_datasource.status = model_llm.DatasourceDownloadStatus.cancelled
         # db_embedding.status_message = traceback.format_exc()
         logging.error(f"Datasource Re download cancelled: {e}")
         
     finally:
-        db_datasource.updated_at = datetime.now(database.KST)
+        db_datasource.updated_at = datetime.now(model_llm.KST)
         db_datasource.update_user = session_data.user_id
         
         update_message = {
             "type": "datasource_update",
-            "data": models.Datasource.from_orm(db_datasource).dict()
+            "data": schema_llm.Datasource.from_orm(db_datasource).dict()
         }
         asyncio.create_task(broadcast_update(update_message))
         # active_tasks 해제
@@ -720,7 +722,7 @@ async def datasource_update_data(session_data, db_datasource, data_source, datas
 
 @router.put(
     "/stop_datasource/{datasource_id}",
-    response_model=models.Datasource,
+    response_model=schema_llm.Datasource,
     dependencies=[Depends(cookie)],
     description="""
    
@@ -731,9 +733,9 @@ async def stop_datasource_indexing(
     db: Session = Depends(get_db),
     session_data: SessionData = Depends(verifier)
 ):
-    db_datasource = db.query(database.DataSource).filter(
-        database.DataSource.datasource_id == datasource_id,
-        database.db_comment_endpoint
+    db_datasource = db.query(model_llm.DataSource).filter(
+        model_llm.DataSource.datasource_id == datasource_id,
+        model_llm.db_comment_endpoint
     ).first()
     if not db_datasource:
         raise HTTPException(status_code=404, detail="Datasource is not found")
@@ -753,13 +755,13 @@ async def stop_datasource_indexing(
     if datasource_task: 
         asyncio.create_task(data_source.cancel_save_data_task(datasource_task))
         
-    db_datasource.status = database.DatasourceDownloadStatus.cancelled
+    db_datasource.status = model_llm.DatasourceDownloadStatus.cancelled
     return db_datasource   
     
 
 @router.post(
     "/preview_datasource",
-    # response_model=models.Datasource,
+    # response_model=schema_llm.Datasource,
     dependencies=[Depends(cookie)],
     description="""<pre>
     Preview Datasource
@@ -819,7 +821,7 @@ async def preview_datasource(
     base_url: Optional[str] = Form(None, description="Base URL for URL data source"),
     max_depth: Optional[int] = Form(None, description="Maximum depth for URL crawling"),
     tag_ids: Optional[str] = Form(None,description="Comma-separated list of tag IDs"),
-    # payload: models.DatasourceCreate ,
+    # payload: schema_llm.DatasourceCreate ,
     file: Annotated[UploadFile ,File(description="File path for document or PDF")] = None,  # File upload
     db: Session = Depends(get_db),
     session_data: SessionData = Depends(verifier)
@@ -855,22 +857,22 @@ async def preview_datasource(
     datasource_id = create_data_source_id(session_data.nickname, update_data['name'])
 
     # Check if a DataSource with the same name already exists
-    existing_datasource = db.query(database.DataSource).filter(database.db_comment_endpoint).filter(database.DataSource.datasource_id == datasource_id).first()
+    existing_datasource = db.query(model_llm.DataSource).filter(model_llm.db_comment_endpoint).filter(model_llm.DataSource.datasource_id == datasource_id).first()
         
     info_datasource = None
     if existing_datasource:
         # 파일때문에 기존의 path를 그대로 사용하기 위해서.
-        info_datasource = models.Datasource.from_orm(existing_datasource)
+        info_datasource = schema_llm.Datasource.from_orm(existing_datasource)
     else:
-        # create_user_info = models.User.from_orm(session_data)
-        db_user = db.query(database.User).filter(database.db_comment_endpoint).filter(database.User.user_id == session_data.user_id).first()
-        create_user_info = models.User.from_orm(db_user)
-        info_datasource = models.Datasource(
+        # create_user_info = schema_llm.User.from_orm(session_data)
+        db_user = db.query(model_llm.User).filter(model_llm.db_comment_endpoint).filter(model_llm.User.user_id == session_data.user_id).first()
+        create_user_info = schema_llm.User.from_orm(db_user)
+        info_datasource = schema_llm.Datasource(
             datasource_id=datasource_id,
             name=name,  # Set default or required values here
             description=description,  # You can customize this
-            created_at=datetime.now(database.KST),
-            updated_at=datetime.now(database.KST),
+            created_at=datetime.now(model_llm.KST),
+            updated_at=datetime.now(model_llm.KST),
             tags = [],
             embeddings = [],
             create_user_info = create_user_info
@@ -986,7 +988,7 @@ async def delete_datasource(
 ):
     logger.info(f"Start Delete datasource : {datasource_id}") 
     # Query the database to find the data source by its ID
-    db_datasource = db.query(database.DataSource).filter(database.db_comment_endpoint).filter(database.DataSource.datasource_id == datasource_id).first()
+    db_datasource = db.query(model_llm.DataSource).filter(model_llm.db_comment_endpoint).filter(model_llm.DataSource.datasource_id == datasource_id).first()
 
     # If the data source doesn't exist, raise a 404 error
     if not db_datasource:
@@ -1028,7 +1030,7 @@ async def delete_datasource(
 
 @router.post(
     "/embedding",
-    response_model=models.Embedding,
+    response_model=schema_llm.Embedding,
     dependencies=[Depends(cookie)],
     description="""
     Creates a new embedding for a given data source and stores it in ChromaDB.
@@ -1090,7 +1092,7 @@ async def delete_datasource(
     """
 )
 async def create_embedding(
-    payload: models.EmbeddingCreate,
+    payload: schema_llm.EmbeddingCreate,
     db: Session = Depends(get_db),
     session_data: SessionData = Depends(verifier)
 ):
@@ -1101,7 +1103,7 @@ async def create_embedding(
     payload_data = payload.dict(exclude_unset=True)
 
     # Retrieve the data source
-    db_datasource = db.query(database.DataSource).filter(database.db_comment_endpoint).filter(database.DataSource.datasource_id == payload.datasource_id).first()
+    db_datasource = db.query(model_llm.DataSource).filter(model_llm.db_comment_endpoint).filter(model_llm.DataSource.datasource_id == payload.datasource_id).first()
     if not db_datasource:
         raise HTTPException(status_code=404, detail="DataSource not found")
 
@@ -1115,7 +1117,7 @@ async def create_embedding(
     # Retrieve LLM API configuration based on the llm_api_id
     # Here you can use your models/logic to get API config details based on llm_api_id
     # Example API data retrieval
-    db_llm_api = db.query(database.LlmApi).filter(database.db_comment_endpoint).filter(database.LlmApi.llm_api_id == payload.llm_api_id).first()
+    db_llm_api = db.query(model_llm.LlmApi).filter(model_llm.db_comment_endpoint).filter(model_llm.LlmApi.llm_api_id == payload.llm_api_id).first()
     if not db_llm_api:
         raise HTTPException(status_code=404, detail="LLM API configuration not found")
     
@@ -1148,11 +1150,11 @@ async def create_embedding(
     # 5. 데이터 임베딩 및 ChromaDB에 추가
     # Create a new embedding entry in the database
     
-    db_embedding = database.Embedding(
+    db_embedding = model_llm.Embedding(
         # datasource_id=payload.datasource_id,
         embedding_id=collection_name,
         status="updating",
-        started_at = datetime.now(database.KST),
+        started_at = datetime.now(model_llm.KST),
         data_size = data_size
     )
     for key, value in payload_data.items():
@@ -1213,15 +1215,15 @@ async def create_embedding(
     def embed_callback(future):
         logger.info(f"Data embedding create completed : {collection_name}") 
         logger.info(f"Data embedding create calback started")
-        db_callback = database.SessionLocal()
+        db_callback = model_llm.SessionLocal()
         try:
-            query_embedding = db_callback.query(database.Embedding).filter(database.db_comment_endpoint)
-            query_embedding = query_embedding.filter(database.Embedding.datasource_id == payload.datasource_id)
-            query_embedding = query_embedding.filter(database.Embedding.embedding_id == collection_name)
+            query_embedding = db_callback.query(model_llm.Embedding).filter(model_llm.db_comment_endpoint)
+            query_embedding = query_embedding.filter(model_llm.Embedding.datasource_id == payload.datasource_id)
+            query_embedding = query_embedding.filter(model_llm.Embedding.embedding_id == collection_name)
             db_embedding = query_embedding.first()
             if future.exception():
                 logger.info(f"Embedding task failed: {str(future.exception())}")
-                db_embedding.status = database.EmbeddingStatus.failed
+                db_embedding.status = model_llm.EmbeddingStatus.failed
                 db_embedding.status_message = str(future.exception())
                 # db_embedding.status_message = traceback.format_exc()
             else:
@@ -1229,8 +1231,8 @@ async def create_embedding(
                 logger.info(f"Embedding task completed. Number of chunks embedded {str(embeded)} / Total {str(total)}: ")
                 # logger.info("Embedding task completed. Number of chunks embedded / Total: ", str(embeded), " / ", str(total))
                 collection.last_update_succeeded_at = iso_8601_str_to_datetime(get_iso_8601_current_time())
-                db_embedding.success_at = datetime.now(database.KST)
-                db_embedding.status=database.EmbeddingStatus.updated
+                db_embedding.success_at = datetime.now(model_llm.KST)
+                db_embedding.status=model_llm.EmbeddingStatus.updated
                 
                 # embedding volume
                 pattern = f"{db_embedding.embedding_id}*"
@@ -1249,24 +1251,24 @@ async def create_embedding(
                     logger.info(f"Total size of index '{index_name}': {total_size_in_bytes} bytes ({total_size_in_mb:.2f} MB)")
             
         except Exception as e:
-            db_embedding.status = database.EmbeddingStatus.failed
+            db_embedding.status = model_llm.EmbeddingStatus.failed
             db_embedding.status_message = str(e)
             # db_embedding.status_message = traceback.format_exc()
             logging.error(f"Embedding index failed: {e}")
             
         except asyncio.exceptions.CancelledError as e:
-            db_embedding.status = database.EmbeddingStatus.cancelled
+            db_embedding.status = model_llm.EmbeddingStatus.cancelled
             db_embedding.status_message = str(e)
             # db_embedding.status_message = traceback.format_exc()
             logging.error(f"Embedding index cancelled: {e}")  
             
         finally:
-            db_embedding.completed_at = datetime.now(database.KST)
+            db_embedding.completed_at = datetime.now(model_llm.KST)
             db_callback.commit()
             
             update_message = {
                 "type": "embedding_update",
-                "data": models.Embedding.from_orm(db_embedding).dict()
+                "data": schema_llm.Embedding.from_orm(db_embedding).dict()
             }
             asyncio.create_task(broadcast_update(update_message))
             # active_tasks 해제
@@ -1277,7 +1279,7 @@ async def create_embedding(
     
     
     #  before start task of opensearch , apply to db. if there is error , do not  execute_save_data    
-    db_embedding.status = database.EmbeddingStatus.updating
+    db_embedding.status = model_llm.EmbeddingStatus.updating
     db.commit()
     asyncio.create_task(execute_embedding())    
     return db_embedding
@@ -1286,7 +1288,7 @@ async def create_embedding(
 
 @router.put(
     "/{datasource_id}/{embedding_id}",
-    response_model=models.Embedding,
+    response_model=schema_llm.Embedding,
     dependencies=[Depends(cookie)],
     description="""
     사용안함
@@ -1295,16 +1297,16 @@ async def create_embedding(
 async def update_embedding(
     datasource_id: str,
     embedding_id : str,
-    payload: models.EmbeddingUpdate,
+    payload: schema_llm.EmbeddingUpdate,
     db: Session = Depends(get_db),
     session_data: SessionData = Depends(verifier)
 ):
     payload_data = payload.dict(exclude_unset=True)
     
-    db_embedding = db.query(database.Embedding).filter(
-        database.Embedding.datasource_id == datasource_id, 
-        database.Embedding.embedding_id == embedding_id,
-        database.db_comment_endpoint
+    db_embedding = db.query(model_llm.Embedding).filter(
+        model_llm.Embedding.datasource_id == datasource_id, 
+        model_llm.Embedding.embedding_id == embedding_id,
+        model_llm.db_comment_endpoint
     ).first()
     if not db_embedding:
         raise HTTPException(status_code=404, detail="Embedding is not found")
@@ -1323,7 +1325,7 @@ async def update_embedding(
 
     # Retrieve LLM API configuration based on the llm_api_id
     # Here you can use your models/logic to get API config details based on llm_api_id
-    db_llm_api = db.query(database.LlmApi).filter(database.db_comment_endpoint).filter(database.LlmApi.llm_api_id == db_embedding.llm_api_id).first()
+    db_llm_api = db.query(model_llm.LlmApi).filter(model_llm.db_comment_endpoint).filter(model_llm.LlmApi.llm_api_id == db_embedding.llm_api_id).first()
     if not db_llm_api:
         raise HTTPException(status_code=404, detail="LLM API configuration not found")
     
@@ -1385,9 +1387,9 @@ async def update_embedding(
         else:
             embeded, total = future.result()
             logger.info("Embedding task completed. Number of chunks embedded / Total: ", str(embeded), " / ", str(total))
-            collection.last_update_succeeded_at = datetime.now(database.KST)
-            db_embedding.success_at = datetime.now(database.KST)
-            db_embedding.completed_at = datetime.now(database.KST)
+            collection.last_update_succeeded_at = datetime.now(model_llm.KST)
+            db_embedding.success_at = datetime.now(model_llm.KST)
+            db_embedding.completed_at = datetime.now(model_llm.KST)
             db_embedding.status="updated"
             
     embed_task.add_done_callback(lambda future: embed_callback(future))
@@ -1403,7 +1405,7 @@ async def update_embedding(
 
 @router.put(
     "/reembeding/{datasource_id}/{embedding_id}",
-    response_model=models.Embedding,
+    response_model=schema_llm.Embedding,
     dependencies=[Depends(cookie)],
     description="""
    
@@ -1416,15 +1418,15 @@ async def embedding_reindex(
     session_data: SessionData = Depends(verifier)
 ):
     
-    db_embedding = db.query(database.Embedding).filter(
-        database.Embedding.datasource_id == datasource_id, 
-        database.Embedding.embedding_id == embedding_id,
-        database.db_comment_endpoint
+    db_embedding = db.query(model_llm.Embedding).filter(
+        model_llm.Embedding.datasource_id == datasource_id, 
+        model_llm.Embedding.embedding_id == embedding_id,
+        model_llm.db_comment_endpoint
     ).first()
     if not db_embedding:
         raise HTTPException(status_code=404, detail="Embedding is not found")
    
-    payload_data = models.Embedding.from_orm(db_embedding).dict()
+    payload_data = schema_llm.Embedding.from_orm(db_embedding).dict()
     # Retrieve the data source
     db_datasource = db_embedding.datasource
     
@@ -1437,7 +1439,7 @@ async def embedding_reindex(
 
     # Retrieve LLM API configuration based on the llm_api_id
     # Here you can use your models/logic to get API config details based on llm_api_id
-    db_llm_api = db.query(database.LlmApi).filter(database.db_comment_endpoint).filter(database.LlmApi.llm_api_id == db_embedding.llm_api_id).first()
+    db_llm_api = db.query(model_llm.LlmApi).filter(model_llm.db_comment_endpoint).filter(model_llm.LlmApi.llm_api_id == db_embedding.llm_api_id).first()
     if not db_llm_api:
         raise HTTPException(status_code=404, detail="LLM API configuration not found")
     
@@ -1477,7 +1479,7 @@ async def embedding_reindex(
     async def  execute_embedding():
         logger.info(f"Data embedding reindex task started : {collection_name}")
         data = await data_source.read_data()
-        db_embedding_dict = models.Embedding.from_orm(db_embedding).dict()
+        db_embedding_dict = schema_llm.Embedding.from_orm(db_embedding).dict()
         splitter_payload_data = {key: value for key, value in db_embedding_dict.items() if value is not None and key not in [
             # 'splitter', 
             # 'chunk_size', 
@@ -1519,23 +1521,23 @@ async def embedding_reindex(
     def embed_callback(future):
         logger.info(f"Data embedding reindex completed : {collection_name}") 
         logger.info(f"Data embedding reindex calback Started")
-        db_callback = database.SessionLocal()
+        db_callback = model_llm.SessionLocal()
         try:
-            query_embedding = db_callback.query(database.Embedding).filter(database.db_comment_endpoint).filter(database.db_comment_endpoint)
-            query_embedding = query_embedding.filter(database.Embedding.datasource_id == datasource_id)
-            query_embedding = query_embedding.filter(database.Embedding.embedding_id == collection_name)
+            query_embedding = db_callback.query(model_llm.Embedding).filter(model_llm.db_comment_endpoint).filter(model_llm.db_comment_endpoint)
+            query_embedding = query_embedding.filter(model_llm.Embedding.datasource_id == datasource_id)
+            query_embedding = query_embedding.filter(model_llm.Embedding.embedding_id == collection_name)
             db_embedding = query_embedding.first()
             if future.exception():
                 logger.info(f"Embedding task failed: {str(future.exception())}")
-                db_embedding.status = database.EmbeddingStatus.failed
+                db_embedding.status = model_llm.EmbeddingStatus.failed
                 db_embedding.status_message = str(future.exception())
             else:
                 embeded, total = future.result()
                 logger.info(f"Embedding task completed. Number of chunks embedded {str(embeded)} / Total {str(total)}: ")
                 # logger.info("Embedding task completed. Number of chunks embedded / Total: ", str(embeded), " / ", str(total))
                 collection.last_update_succeeded_at = iso_8601_str_to_datetime(get_iso_8601_current_time())
-                db_embedding.success_at = datetime.now(database.KST)
-                db_embedding.status=database.EmbeddingStatus.updated
+                db_embedding.success_at = datetime.now(model_llm.KST)
+                db_embedding.status=model_llm.EmbeddingStatus.updated
                 
                 # embedding volume
                 pattern = f"{db_embedding.embedding_id}*"
@@ -1554,24 +1556,24 @@ async def embedding_reindex(
                     logger.info(f"Total size of index '{index_name}': {total_size_in_bytes} bytes ({total_size_in_mb:.2f} MB)")
             
         except Exception as e:
-            db_embedding.status = database.EmbeddingStatus.failed
+            db_embedding.status = model_llm.EmbeddingStatus.failed
             db_embedding.status_message = str(e)
             # db_embedding.status_message = traceback.format_exc()
             logging.error(f"Embedding reindex failed: {e}")
             
         except asyncio.exceptions.CancelledError as e:
-            db_embedding.status = database.EmbeddingStatus.cancelled
+            db_embedding.status = model_llm.EmbeddingStatus.cancelled
             db_embedding.status_message = str(e)
             # db_embedding.status_message = traceback.format_exc()
             logging.error(f"Embedding reindex cancelled: {e}")
             
         finally:
-            db_embedding.completed_at = datetime.now(database.KST)
+            db_embedding.completed_at = datetime.now(model_llm.KST)
             db_callback.commit()
             
             update_message = {
                 "type": "embedding_update",
-                "data": models.Embedding.from_orm(db_embedding).dict()
+                "data": schema_llm.Embedding.from_orm(db_embedding).dict()
             }
             asyncio.create_task(broadcast_update(update_message))
             # active_tasks 해제
@@ -1583,7 +1585,7 @@ async def embedding_reindex(
     
     
     #  before start task of opensearch , apply to db. if there is error , do not  execute_save_data    
-    db_embedding.status = database.EmbeddingStatus.updating
+    db_embedding.status = model_llm.EmbeddingStatus.updating
     asyncio.create_task(execute_embedding())
     db.commit()
     return db_embedding
@@ -1591,7 +1593,7 @@ async def embedding_reindex(
 
 @router.put(
     "/stop_embeding/{datasource_id}/{embedding_id}",
-    response_model=models.Embedding,
+    response_model=schema_llm.Embedding,
     dependencies=[Depends(cookie)],
     description="""
    
@@ -1603,21 +1605,21 @@ async def stop_embeding_indexing(
     db: Session = Depends(get_db),
     session_data: SessionData = Depends(verifier)
 ):
-    db_embedding = db.query(database.Embedding).filter(
-        database.Embedding.datasource_id == datasource_id, 
-        database.Embedding.embedding_id == embedding_id,
-        database.db_comment_endpoint
+    db_embedding = db.query(model_llm.Embedding).filter(
+        model_llm.Embedding.datasource_id == datasource_id, 
+        model_llm.Embedding.embedding_id == embedding_id,
+        model_llm.db_comment_endpoint
     ).first()
     if not db_embedding:
         raise HTTPException(status_code=404, detail="Embedding is not found")
 
-    payload_data = models.Embedding.from_orm(db_embedding).dict()
+    payload_data = schema_llm.Embedding.from_orm(db_embedding).dict()
     # Retrieve the data source
     db_datasource = db_embedding.datasource
     
     # Retrieve LLM API configuration based on the llm_api_id
     # Here you can use your models/logic to get API config details based on llm_api_id
-    db_llm_api = db.query(database.LlmApi).filter(database.db_comment_endpoint).filter(database.LlmApi.llm_api_id == db_embedding.llm_api_id).first()
+    db_llm_api = db.query(model_llm.LlmApi).filter(model_llm.db_comment_endpoint).filter(model_llm.LlmApi.llm_api_id == db_embedding.llm_api_id).first()
     if not db_llm_api:
         raise HTTPException(status_code=404, detail="LLM API configuration not found")
     
@@ -1672,11 +1674,11 @@ async def stop_embeding_indexing(
     
 @router.post(
     "/preview_embedding",
-    # response_model=models.Embedding,
+    # response_model=schema_llm.Embedding,
     dependencies=[Depends(cookie)]
 )
 async def preview_embedding(
-    payload: models.EmbeddingPreview,
+    payload: schema_llm.EmbeddingPreview,
     db: Session = Depends(get_db),
     session_data: SessionData = Depends(verifier)
 ):
@@ -1686,13 +1688,13 @@ async def preview_embedding(
     payload_data = payload.dict(exclude_unset=True)
 
     # Retrieve the data source
-    db_datasource = db.query(database.DataSource).filter(database.db_comment_endpoint).filter(database.DataSource.datasource_id == payload.datasource_id).first()
+    db_datasource = db.query(model_llm.DataSource).filter(model_llm.db_comment_endpoint).filter(model_llm.DataSource.datasource_id == payload.datasource_id).first()
     if not db_datasource:
         raise HTTPException(status_code=404, detail="DataSource not found")
    
     # 1. 데이터 소스 생성
     datasource_type = DataSourceType(db_datasource.datasource_type)
-    info_datasource = models.Datasource.from_orm(db_datasource)
+    info_datasource = schema_llm.Datasource.from_orm(db_datasource)
     
     preview_data = preview_datasource_sub(
         datasource_type=datasource_type,
@@ -1739,7 +1741,7 @@ async def preview_embedding(
     """
 )
 async def similarity_search(
-    payload: models.EmbeddingSimilaritySearch,
+    payload: schema_llm.EmbeddingSimilaritySearch,
     db: Session = Depends(get_db),
     session_data: SessionData = Depends(verifier)
 ):
@@ -1749,7 +1751,7 @@ async def similarity_search(
     payload_data = payload.dict(exclude_unset=True)
 
     # Retrieve the data source
-    db_embedding = db.query(database.Embedding).filter(database.db_comment_endpoint).filter(database.Embedding.embedding_id == payload.embedding_id).first()
+    db_embedding = db.query(model_llm.Embedding).filter(model_llm.db_comment_endpoint).filter(model_llm.Embedding.embedding_id == payload.embedding_id).first()
     if not db_embedding:
         raise HTTPException(status_code=404, detail="Embedding is not found")
 
@@ -1786,13 +1788,13 @@ async def similarity_search(
 
 @router.get(
     "/{datasource_id}",
-    response_model=models.Datasource,
+    response_model=schema_llm.Datasource,
     dependencies=[Depends(cookie)],
     summary="Get a specific data source by ID",
     description="Retrieve detailed information about a specific data source using its ID."
 )
 async def get_datasource(datasource_id: str, db: Session = Depends(get_db)):
-    datasource = db.query(database.DataSource).filter(database.db_comment_endpoint).filter(database.DataSource.datasource_id == datasource_id).first()
+    datasource = db.query(model_llm.DataSource).filter(model_llm.db_comment_endpoint).filter(model_llm.DataSource.datasource_id == datasource_id).first()
     if not datasource:
         raise HTTPException(status_code=404, detail="DataSource not found")
     return datasource
@@ -1800,16 +1802,16 @@ async def get_datasource(datasource_id: str, db: Session = Depends(get_db)):
 
 @router.post(
     "/datasource_search", 
-    response_model=models.DataSourceSearchResponse, 
+    response_model=schema_llm.DataSourceSearchResponse, 
     dependencies=[Depends(cookie)],
     description="Search data sources with various criteria"
 )
 async def search_datasources(
-    search: models.DataSourceSearch,
+    search: schema_llm.DataSourceSearch,
     db: Session = Depends(get_db),
     session_data: SessionData = Depends(verifier)
 ):
-    query = db.query(database.DataSource)
+    query = db.query(model_llm.DataSource)
     comment = text("/* is_endpoint_query */ 1=1")
     query = query.filter(comment)   
     
@@ -1822,41 +1824,41 @@ async def search_datasources(
         if 'search_scope' in search_exclude:
             filters = []
             if "name" in search_exclude['search_scope']:
-                filters.append(database.DataSource.name.like(search_pattern))
+                filters.append(model_llm.DataSource.name.like(search_pattern))
             if "description" in search_exclude['search_scope']:
-                filters.append(database.DataSource.description.like(search_pattern))
+                filters.append(model_llm.DataSource.description.like(search_pattern))
             query = query.filter(or_(*filters))
         else:
             query = query.filter(
                 or_(
-                    database.DataSource.name.like(search_pattern),
-                    database.DataSource.description.like(search_pattern)
+                    model_llm.DataSource.name.like(search_pattern),
+                    model_llm.DataSource.description.like(search_pattern)
                 )
             )
     
     # Filter by visibility
     if 'visibility' in search_exclude and len(search_exclude['visibility']) > 0:
         visibility_values = [v.value for v in search_exclude['visibility']]
-        query = query.filter(database.DataSource.visibility.in_(visibility_values))
+        query = query.filter(model_llm.DataSource.visibility.in_(visibility_values))
     
     # Filter by tags
     if 'tag_ids' in search_exclude and len(search_exclude['tag_ids']) > 0:
-        query = query.filter(database.DataSource.tags.any(database.Tag.tag_id.in_(search_exclude['tag_ids'])))
+        query = query.filter(model_llm.DataSource.tags.any(model_llm.Tag.tag_id.in_(search_exclude['tag_ids'])))
     
     # Filter by users
     user_filter_basic = [
-        database.DataSource.create_user == session_data.user_id ,
-        database.DataSource.visibility == 'public'
+        model_llm.DataSource.create_user == session_data.user_id ,
+        model_llm.DataSource.visibility == 'public'
     ]
     query = query.filter(or_(*user_filter_basic))
     if 'user_list' in search_exclude and len(search_exclude['user_list']) > 0:
-        query = query.filter(database.DataSource.create_user.in_(search_exclude['user_list']))
+        query = query.filter(model_llm.DataSource.create_user.in_(search_exclude['user_list']))
 
     # Filter by data source types (multi-select)
     if 'datasource_types' in search_exclude and len(search_exclude['datasource_types']) > 0:
         # Extract the string values from the Enum
         datasource_type_values = [ds_type.value for ds_type in search_exclude['datasource_types']]
-        query = query.filter(database.DataSource.datasource_type.in_(datasource_type_values))
+        query = query.filter(model_llm.DataSource.datasource_type.in_(datasource_type_values))
         
     total_count = query.count()
     
@@ -1864,19 +1866,19 @@ async def search_datasources(
     
 
     # Pagination
-    query = query.order_by(database.DataSource.updated_at.desc(),database.DataSource.created_at.desc())  
+    query = query.order_by(model_llm.DataSource.updated_at.desc(),model_llm.DataSource.created_at.desc())  
     if 'skip' in search_exclude and 'limit' in search_exclude:
         query = query.offset(search_exclude['skip']).limit(search_exclude['limit']) 
     
     query = query.options(
-        selectinload(database.DataSource.tags),
-        selectinload(database.DataSource.embeddings),
-        selectinload(database.DataSource.create_user_info)
+        selectinload(model_llm.DataSource.tags),
+        selectinload(model_llm.DataSource.embeddings),
+        selectinload(model_llm.DataSource.create_user_info)
     )
     
     datasources = query.all()
     
-    return models.DataSourceSearchResponse(
+    return schema_llm.DataSourceSearchResponse(
         total_count=total_count,
         list=datasources
     )
@@ -1884,52 +1886,52 @@ async def search_datasources(
     
 @router.post(
     "/embedding_search", 
-    response_model=models.EmbeddingSearchResponse, 
+    response_model=schema_llm.EmbeddingSearchResponse, 
     dependencies=[Depends(cookie)],
     description="Search embeddings with pagination")
 async def search_embeddings(
-    search: models.EmbeddingSearch,
+    search: schema_llm.EmbeddingSearch,
     db: Session = Depends(get_db),
     session_data: SessionData = Depends(verifier)
 ):
-    query = db.query(database.Embedding).filter(database.db_comment_endpoint)
+    query = db.query(model_llm.Embedding).filter(model_llm.db_comment_endpoint)
     
     search_exclude = search.dict(exclude_unset=True)
-    query = query.filter(database.Embedding.datasource_id == search.datasource_id)
+    query = query.filter(model_llm.Embedding.datasource_id == search.datasource_id)
 
     # Get the total count before pagination
     total_count = query.count()
 
     # Apply pagination
-    query = query.order_by(database.Embedding.last_update_time.desc(),database.Embedding.started_at.desc())  
+    query = query.order_by(model_llm.Embedding.last_update_time.desc(),model_llm.Embedding.started_at.desc())  
     if 'skip' in search_exclude and 'limit' in search_exclude:
         query = query.offset(search_exclude['skip']).limit(search_exclude['limit']) 
     
     # Fetch the results
     embeddings = query.all()
 
-    return models.EmbeddingSearchResponse(
+    return schema_llm.EmbeddingSearchResponse(
         total_count=total_count,
         list=embeddings
     )
     
     
-@router.get("/{datasource_id}/{embedding_id}", response_model=models.Embedding)
+@router.get("/{datasource_id}/{embedding_id}", response_model=schema_llm.Embedding)
 async def get_embedding_info(
     datasource_id: str,
     embedding_id: str,
     db: Session = Depends(get_db)
 ):
     # Fetch the datasource to ensure it exists
-    db_datasource = db.query(database.DataSource).filter(database.db_comment_endpoint).filter(database.DataSource.datasource_id == datasource_id).first()
+    db_datasource = db.query(model_llm.DataSource).filter(model_llm.db_comment_endpoint).filter(model_llm.DataSource.datasource_id == datasource_id).first()
     if not db_datasource:
         raise HTTPException(status_code=404, detail="Datasource not found")
     
     # Fetch the embedding
-    db_embedding = db.query(database.Embedding).filter(
-        database.Embedding.datasource_id == datasource_id, 
-        database.Embedding.embedding_id == embedding_id,
-        database.db_comment_endpoint
+    db_embedding = db.query(model_llm.Embedding).filter(
+        model_llm.Embedding.datasource_id == datasource_id, 
+        model_llm.Embedding.embedding_id == embedding_id,
+        model_llm.db_comment_endpoint
     ).first()
     
     if not db_embedding:
@@ -1940,17 +1942,17 @@ async def get_embedding_info(
 
 
 
-@router.delete("/{datasource_id}/{embedding_id}", response_model=models.Embedding)
+@router.delete("/{datasource_id}/{embedding_id}", response_model=schema_llm.Embedding)
 async def delete_embedding(
     datasource_id: str,
     embedding_id: str,
     db: Session = Depends(get_db)
 ):
     # Verify the embedding exists
-    db_embedding = db.query(database.Embedding).filter(
-        database.Embedding.datasource_id == datasource_id,
-        database.Embedding.embedding_id == embedding_id,
-        database.db_comment_endpoint
+    db_embedding = db.query(model_llm.Embedding).filter(
+        model_llm.Embedding.datasource_id == datasource_id,
+        model_llm.Embedding.embedding_id == embedding_id,
+        model_llm.db_comment_endpoint
     ).first()
     
     if not db_embedding:
@@ -1989,7 +1991,7 @@ async def delete_embedding(
     collection.delete_collection()
     # embed_delete = asyncio.create_task(collection.adelete_collection())
     # Extract embedding data before deletion
-    embedding_data = models.Embedding.from_orm(db_embedding)
+    embedding_data = schema_llm.Embedding.from_orm(db_embedding)
     
 
     # Delete the embedding
@@ -2004,7 +2006,7 @@ class DataSourceNameRequest(BaseModel):
 
 @router.post(
     "/check_name",
-    response_model=models.DataSourceSearchResponse,  # Adjust the response model to the correct one for datasources
+    response_model=schema_llm.DataSourceSearchResponse,  # Adjust the response model to the correct one for datasources
     dependencies=[Depends(cookie)],  # Adjust this dependency based on your authentication setup
     description="""
     지정된 이름을 가진 데이터 소스가 존재하는지 확인합니다. 
@@ -2015,14 +2017,14 @@ def check_datasource_name(request: DataSourceNameRequest, db: Session = Depends(
     """
     지정된 이름을 가진 데이터 소스가 존재하는지 확인하고, 결과를 리스트 형식으로 반환합니다.
     """
-    query = db.query(database.DataSource).filter(
-        database.db_comment_endpoint ,
-        database.DataSource.name == request.name
+    query = db.query(model_llm.DataSource).filter(
+        model_llm.db_comment_endpoint ,
+        model_llm.DataSource.name == request.name
     )
     total_count = query.count()
     results = query.all()  # Fetch all matching records
 
-    return models.DataSourceSearchResponse(
+    return schema_llm.DataSourceSearchResponse(
         total_count=total_count,
         list=results
     )

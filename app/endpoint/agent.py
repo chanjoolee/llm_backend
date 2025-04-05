@@ -4,7 +4,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import exists, insert, or_, select, text
 from sqlalchemy.orm import Session
-from app import models, database
+from app import database
+from app.model import model_llm
+from app.schema import schema_llm
 from app.utils import utils
 from app.endpoint.login import cookie , SessionData , verifier
 from app.database import SessionLocal, get_db
@@ -17,7 +19,7 @@ router = APIRouter()
 
 @router.post(
     "/create_agent",
-    response_model=models.Agent,
+    response_model=schema_llm.Agent,
     dependencies=[Depends(cookie)],
     tags=["Agents"],
     description="""<pre>
@@ -37,11 +39,11 @@ router = APIRouter()
     """
 )
 def create_agent(
-    agent: models.AgentCreate,
+    agent: schema_llm.AgentCreate,
     db: Session = Depends(get_db),
     session_data: SessionData = Depends(verifier)
 ):
-    db_agent = database.Agent(
+    db_agent = model_llm.Agent(
         create_user=session_data.user_id
     )
     # Handle prompts, tools, and tags associations
@@ -58,10 +60,10 @@ def create_agent(
     # Handle prompts associations
     if 'prompts' in update_data:
         for i, prompt in enumerate(agent.prompts):
-            db_prompt = db.query(database.Prompt).filter(database.Prompt.prompt_id == prompt.prompt_id).first()
+            db_prompt = db.query(model_llm.Prompt).filter(model_llm.Prompt.prompt_id == prompt.prompt_id).first()
 
             if db_prompt:
-                stmt = insert(database.agent_prompts).values(
+                stmt = insert(model_llm.agent_prompts).values(
                     agent_id=db_agent.agent_id,
                     prompt_id=db_prompt.prompt_id
                     # ,sort_order=i+1
@@ -71,7 +73,7 @@ def create_agent(
                 for db_prompt_message in db_prompt.promptMessage:
                     message = db_prompt_message.message
                     for variable in prompt.variables:
-                        db_variable = database.AgentVariable(
+                        db_variable = model_llm.AgentVariable(
                             agent_id=db_agent.agent_id,
                             variable_name=variable.variable_name,
                             variable_value=variable.value
@@ -79,7 +81,7 @@ def create_agent(
                         db.add(db_variable)
 
                     # 이 부분은 어떻게 처리를 하나 ==> conversation 을 만들때 처리하는 것이 좋을 듯. 어떻게? ...
-                    # new_message = database.Message(
+                    # new_message = model_llm.Message(
                     #     conversation_id=db_agent.agent_id,
                     #     message_type=db_prompt_message.message_type,
                     #     message=message,
@@ -91,27 +93,27 @@ def create_agent(
     # Handle tools
     if 'tools' in update_data:
         for tool_id in update_data['tools']:
-            db_tool = db.query(database.Tool).filter(database.db_comment_endpoint).filter(database.Tool.tool_id == tool_id).first()
+            db_tool = db.query(model_llm.Tool).filter(model_llm.db_comment_endpoint).filter(model_llm.Tool.tool_id == tool_id).first()
             if db_tool:
                 db_agent.tools.append(db_tool)
 
     # Handle tags
     if 'tags' in update_data:
         for tag_id in agent.tags:
-            db_tag = db.query(database.Tag).filter(database.db_comment_endpoint).filter(database.Tag.tag_id == tag_id).first()
+            db_tag = db.query(model_llm.Tag).filter(model_llm.db_comment_endpoint).filter(model_llm.Tag.tag_id == tag_id).first()
             if db_tag:
                 db_agent.tags.append(db_tag)
 
     # Handle child agents associations
     if 'sub_agents' in update_data:
         for child_agent_id in agent.sub_agents:
-            db_child_agent = db.query(database.Agent).filter(database.Agent.agent_id == child_agent_id).first()
+            db_child_agent = db.query(model_llm.Agent).filter(model_llm.Agent.agent_id == child_agent_id).first()
             if db_child_agent:
                 db_child_agent.parent_agent_id = db_agent.agent_id
                 db.add(db_child_agent)
     if 'datasources' in update_data:
         for datasource_id in agent.datasources:
-            db_datasource = db.query(database.DataSource).filter(database.db_comment_endpoint).filter(database.DataSource.datasource_id == datasource_id).first()
+            db_datasource = db.query(model_llm.DataSource).filter(model_llm.db_comment_endpoint).filter(model_llm.DataSource.datasource_id == datasource_id).first()
             if db_datasource:
                 db_agent.datasources.append(db_datasource)
     db.flush()
@@ -121,7 +123,7 @@ def create_agent(
 
 @router.get(
     "/get_agent/{agent_id}",
-    response_model=models.Agent,
+    response_model=schema_llm.Agent,
     dependencies=[Depends(cookie)],
     tags=["Agents"],
     description="""<pre>
@@ -134,8 +136,8 @@ def get_agent(
     db: Session = Depends(get_db),
     session_data: SessionData = Depends(verifier)
 ):
-    query = db.query(database.Agent).filter(database.db_comment_endpoint)
-    query = query.filter(database.Agent.agent_id == agent_id)
+    query = db.query(model_llm.Agent).filter(model_llm.db_comment_endpoint)
+    query = query.filter(model_llm.Agent.agent_id == agent_id)
 
     db_agent = query.first()
     if db_agent is None:
@@ -145,7 +147,7 @@ def get_agent(
 
 @router.put(
     "/update_agent/{agent_id}",
-    response_model=models.Agent,
+    response_model=schema_llm.Agent,
     dependencies=[Depends(cookie)],
     tags=["Agents"],
     description="""<pre>
@@ -166,12 +168,12 @@ def get_agent(
 )
 def update_agent(
     agent_id: int,
-    agent: models.AgentUpdate,
+    agent: schema_llm.AgentUpdate,
     db: Session = Depends(get_db),
     session_data: SessionData = Depends(verifier)
 ):
-    query = db.query(database.Agent).filter(database.db_comment_endpoint)
-    query = query.filter(database.Agent.agent_id == agent_id)
+    query = db.query(model_llm.Agent).filter(model_llm.db_comment_endpoint)
+    query = query.filter(model_llm.Agent.agent_id == agent_id)
     db_agent = query.first()
 
     if db_agent is None:
@@ -187,12 +189,12 @@ def update_agent(
     if 'prompts' in update_data:
         db_agent.prompts = []
         db_agent.variables = []
-        db.query(database.AgentVariable).filter(database.AgentVariable.agent_id == agent_id).delete(synchronize_session='fetch')
+        db.query(model_llm.AgentVariable).filter(model_llm.AgentVariable.agent_id == agent_id).delete(synchronize_session='fetch')
         for i, prompt in enumerate(agent.prompts):
-            db_prompt = db.query(database.Prompt).filter(database.Prompt.prompt_id == prompt.prompt_id).first()
+            db_prompt = db.query(model_llm.Prompt).filter(model_llm.Prompt.prompt_id == prompt.prompt_id).first()
 
             if db_prompt:
-                # stmt = insert(database.agent_prompts).values(
+                # stmt = insert(model_llm.agent_prompts).values(
                 #     agent_id=db_agent.agent_id,
                 #     prompt_id=db_prompt.prompt_id
                 # )
@@ -203,7 +205,7 @@ def update_agent(
                 #     message = db_prompt_message.message
                     
                 for variable in prompt.variables:
-                    db_variable = database.AgentVariable(
+                    db_variable = model_llm.AgentVariable(
                         agent_id=db_agent.agent_id,
                         variable_name=variable.variable_name,
                         variable_value=variable.value
@@ -211,7 +213,7 @@ def update_agent(
                     db.add(db_variable)
 
                     # 이 부분은 어떻게 처리를 하나 ==> conversation 을 만들때 처리하는 것이 좋을 듯. 어떻게? ...
-                    # new_message = database.Message(
+                    # new_message = model_llm.Message(
                     #     conversation_id=db_agent.agent_id,
                     #     message_type=db_prompt_message.message_type,
                     #     message=message,
@@ -223,7 +225,7 @@ def update_agent(
     if 'tools' in update_data:
         db_agent.tools = []
         for tool_id in update_data['tools']:
-            db_tool = db.query(database.Tool).filter(database.db_comment_endpoint).filter(database.Tool.tool_id == tool_id).first()
+            db_tool = db.query(model_llm.Tool).filter(model_llm.db_comment_endpoint).filter(model_llm.Tool.tool_id == tool_id).first()
             if db_tool:
                 db_agent.tools.append(db_tool)
 
@@ -231,7 +233,7 @@ def update_agent(
     if 'tags' in update_data:
         db_agent.tags = []
         for tag_id in agent.tags:
-            db_tag = db.query(database.Tag).filter(database.db_comment_endpoint).filter(database.Tag.tag_id == tag_id).first()
+            db_tag = db.query(model_llm.Tag).filter(model_llm.db_comment_endpoint).filter(model_llm.Tag.tag_id == tag_id).first()
             if db_tag:
                 db_agent.tags.append(db_tag)
 
@@ -243,21 +245,21 @@ def update_agent(
         # Remove relationships that are no longer valid
         agents_to_remove = current_child_agents - new_child_agents
         for child_agent_id in agents_to_remove:
-            db_child_agent = db.query(database.Agent).filter(database.Agent.agent_id == child_agent_id).first()
+            db_child_agent = db.query(model_llm.Agent).filter(model_llm.Agent.agent_id == child_agent_id).first()
             if db_child_agent:
                 db_child_agent.parent_agent_id = None
 
         # Add new relationships
         agents_to_add = new_child_agents - current_child_agents
         for child_agent_id in agents_to_add:
-            db_child_agent = db.query(database.Agent).filter(database.Agent.agent_id == child_agent_id).first()
+            db_child_agent = db.query(model_llm.Agent).filter(model_llm.Agent.agent_id == child_agent_id).first()
             if db_child_agent:
                 db_child_agent.parent_agent_id = db_agent.agent_id
 
     if 'datasources' in update_data:
         db_agent.datasources = []
         for datasource_id in agent.datasources:
-            db_datasource = db.query(database.DataSource).filter(database.db_comment_endpoint).filter(database.DataSource.datasource_id == datasource_id).first()
+            db_datasource = db.query(model_llm.DataSource).filter(model_llm.db_comment_endpoint).filter(model_llm.DataSource.datasource_id == datasource_id).first()
             if db_datasource:
                 db_agent.datasources.append(db_datasource)
     db.flush()
@@ -267,7 +269,7 @@ def update_agent(
 
 @router.delete(
     "/delete_agent/{agent_id}",
-    response_model=models.Agent,
+    response_model=schema_llm.Agent,
     dependencies=[Depends(cookie)],
     tags=["Agents"],
     description="""<pre>
@@ -280,15 +282,15 @@ def delete_agent(
     db: Session = Depends(get_db),
     session_data: SessionData = Depends(cookie)
 ):
-    query = db.query(database.Agent).filter(database.db_comment_endpoint)
-    query = query.filter(database.Agent.agent_id == agent_id)
+    query = db.query(model_llm.Agent).filter(model_llm.db_comment_endpoint)
+    query = query.filter(model_llm.Agent.agent_id == agent_id)
     db_agent = query.first()
 
     if db_agent is None:
         raise HTTPException(status_code=404, detail="Agent not found")
     
     
-    deleted_data = models.Agent.from_orm(db_agent)   
+    deleted_data = schema_llm.Agent.from_orm(db_agent)   
     db_agent.prompts = []
     db_agent.tools = []
     db_agent.tags = []
@@ -302,64 +304,64 @@ def delete_agent(
 공통적으로 사용해야 하는 Function 이 필요함.
 """
 def search_agent_basic(db, search_exclude):
-    query = db.query(database.Agent).filter(database.db_comment_endpoint)
+    query = db.query(model_llm.Agent).filter(model_llm.db_comment_endpoint)
     if 'search_words' in search_exclude and search_exclude['search_words']:
         search_filter_word = []
         if 'title' in search_exclude['search_range_list']:
-            filter_title = (database.Agent.name.like(f'%{search_exclude["search_words"]}%'))
+            filter_title = (model_llm.Agent.name.like(f'%{search_exclude["search_words"]}%'))
             search_filter_word.append(filter_title)
         if 'description' in search_exclude['search_range_list']:
-            filter_description = (database.Agent.description.like(f'%{search_exclude["search_words"]}%'))
+            filter_description = (model_llm.Agent.description.like(f'%{search_exclude["search_words"]}%'))
             search_filter_word.append(filter_description)
         if len(search_filter_word) > 0 :
             query = query.filter(or_(*search_filter_word))
             
     if 'visibility_list' in search_exclude and search_exclude['visibility_list']:
-        query = query.filter(database.Agent.visibility.in_(search_exclude['visibility_list']))
+        query = query.filter(model_llm.Agent.visibility.in_(search_exclude['visibility_list']))
 
     if 'tag_list' in search_exclude and search_exclude['tag_list']:
-        query = query.join(database.agent_tags).filter(database.agent_tags.c.tag_id.in_(search_exclude['tag_list']))
+        query = query.join(model_llm.agent_tags).filter(model_llm.agent_tags.c.tag_id.in_(search_exclude['tag_list']))
     
     if 'user_list' in search_exclude and len(search_exclude['user_list']) > 0:
-        query = query.filter(database.Agent.create_user .in_(search_exclude['user_list']))
+        query = query.filter(model_llm.Agent.create_user .in_(search_exclude['user_list']))
 
     if 'llm_api_list' in search_exclude and search_exclude['llm_api_list']:
-        query = query.filter(database.Agent.llm_api_id.in_(search_exclude['llm_api_list']))
+        query = query.filter(model_llm.Agent.llm_api_id.in_(search_exclude['llm_api_list']))
 
     if 'llm_model_list' in search_exclude and search_exclude['llm_model_list']:
-        query = query.filter(database.Agent.llm_model.in_(search_exclude['llm_model_list']))
+        query = query.filter(model_llm.Agent.llm_model.in_(search_exclude['llm_model_list']))
     
     if 'prompt_list' in search_exclude and len(search_exclude['prompt_list']) > 0:
         subquery = (
-            select(database.agent_prompts.c.agent_id)
-            .join(database.Prompt, database.Prompt.prompt_id == database.agent_prompts.c.prompt_id)
-            .filter(database.Prompt.prompt_id.in_(search_exclude['prompt_list']))
+            select(model_llm.agent_prompts.c.agent_id)
+            .join(model_llm.Prompt, model_llm.Prompt.prompt_id == model_llm.agent_prompts.c.prompt_id)
+            .filter(model_llm.Prompt.prompt_id.in_(search_exclude['prompt_list']))
         )
         
         query = query.filter(
-            exists(subquery.where(database.Agent.agent_id == database.agent_prompts.c.agent_id))
+            exists(subquery.where(model_llm.Agent.agent_id == model_llm.agent_prompts.c.agent_id))
         )
      
     if 'tool_list' in search_exclude and len(search_exclude['tool_list']) > 0:
         subquery = (
-            select(database.agent_tools.c.tool_id)
-            .join(database.Tool, database.Tool.tool_id == database.agent_tools.c.tool_id)
-            .filter(database.Tool.tool_id.in_(search_exclude['tool_list']))
+            select(model_llm.agent_tools.c.tool_id)
+            .join(model_llm.Tool, model_llm.Tool.tool_id == model_llm.agent_tools.c.tool_id)
+            .filter(model_llm.Tool.tool_id.in_(search_exclude['tool_list']))
         )
         
         query = query.filter(
-            exists(subquery.where(database.Agent.agent_id == database.agent_tools.c.agent_id))
+            exists(subquery.where(model_llm.Agent.agent_id == model_llm.agent_tools.c.agent_id))
         )
                
     if 'datasource_list' in search_exclude and len(search_exclude['datasource_list']) > 0:
         subquery = (
-            select(database.agent_datasource.c.agent_id)
-            .join(database.DataSource, database.DataSource.datasource_id == database.agent_datasource.c.datasource_id)
-            .filter(database.DataSource.datasource_id.in_(search_exclude['datasource_list']))
+            select(model_llm.agent_datasource.c.agent_id)
+            .join(model_llm.DataSource, model_llm.DataSource.datasource_id == model_llm.agent_datasource.c.datasource_id)
+            .filter(model_llm.DataSource.datasource_id.in_(search_exclude['datasource_list']))
         )
         
         query = query.filter(
-            exists(subquery.where(database.Agent.agent_id == database.agent_datasource.c.agent_id))
+            exists(subquery.where(model_llm.Agent.agent_id == model_llm.agent_datasource.c.agent_id))
         )
         
     filter_component = []  
@@ -367,39 +369,39 @@ def search_agent_basic(db, search_exclude):
         for component in search_exclude['component_list']:
             if component['type'] == 'prompt':
                 subquery = (
-                    select(database.agent_prompts.c.agent_id)
-                    .join(database.Prompt, database.Prompt.prompt_id == database.agent_prompts.c.prompt_id)
-                    .filter(database.Prompt.prompt_id  == component['id']))
+                    select(model_llm.agent_prompts.c.agent_id)
+                    .join(model_llm.Prompt, model_llm.Prompt.prompt_id == model_llm.agent_prompts.c.prompt_id)
+                    .filter(model_llm.Prompt.prompt_id  == component['id']))
                 filter_component.append(
-                    exists(subquery.where(database.Agent.agent_id == database.agent_prompts.c.agent_id))
+                    exists(subquery.where(model_llm.Agent.agent_id == model_llm.agent_prompts.c.agent_id))
                 )
             if component['type'] == 'tool':
                 subquery = (
-                    select(database.agent_tools.c.agent_id)
-                    .join(database.Tool, database.Tool.tool_id == database.agent_tools.c.tool_id)
-                    .filter(database.Tool.tool_id  == component['id']))
+                    select(model_llm.agent_tools.c.agent_id)
+                    .join(model_llm.Tool, model_llm.Tool.tool_id == model_llm.agent_tools.c.tool_id)
+                    .filter(model_llm.Tool.tool_id  == component['id']))
                 filter_component.append(
-                    exists(subquery.where(database.Agent.agent_id == database.agent_tools.c.agent_id))
+                    exists(subquery.where(model_llm.Agent.agent_id == model_llm.agent_tools.c.agent_id))
                 )
                 
             # 하위에이전트
             if component['type'] == 'agent':
                 subquery = (
-                    select(database.Agent.agent_id)
-                    .filter(database.Agent.parent_agent_id == component['id'])
+                    select(model_llm.Agent.agent_id)
+                    .filter(model_llm.Agent.parent_agent_id == component['id'])
                 )
                 filter_component.append(
-                    exists(subquery.where(database.Agent.agent_id == database.Agent.agent_id))
+                    exists(subquery.where(model_llm.Agent.agent_id == model_llm.Agent.agent_id))
                 )
             
             if component['type'] == 'datasource':
                 subquery = (
-                    select(database.agent_datasource.c.agent_id)
-                    .join(database.DataSource, database.DataSource.datasource_id == database.agent_datasource.c.datasource_id)
-                    .filter(database.DataSource.datasource_id == component['id'])
+                    select(model_llm.agent_datasource.c.agent_id)
+                    .join(model_llm.DataSource, model_llm.DataSource.datasource_id == model_llm.agent_datasource.c.datasource_id)
+                    .filter(model_llm.DataSource.datasource_id == component['id'])
                 )
                 filter_component.append(
-                    exists(subquery.where(database.Agent.agent_id == database.agent_datasource.c.agent_id))
+                    exists(subquery.where(model_llm.Agent.agent_id == model_llm.agent_datasource.c.agent_id))
                 )
     query = query.filter(or_(*filter_component))    
 
@@ -409,7 +411,7 @@ def search_agent_basic(db, search_exclude):
 
 @router.post(
     "/search_agents",
-    response_model=models.SearchAgentsResponse,
+    response_model=schema_llm.SearchAgentsResponse,
     dependencies=[Depends(cookie)],
     tags=["Agents"],
     description=
@@ -432,7 +434,7 @@ def search_agent_basic(db, search_exclude):
     """
 )
 def search_agents(
-    search: models.AgentSearch,
+    search: schema_llm.AgentSearch,
     db: Session = Depends(get_db),
     session_data: SessionData = Depends(verifier)
 ):
@@ -442,24 +444,24 @@ def search_agents(
     
     # 사용자 필터링
     user_filter_basic = [
-        database.Agent.create_user == session_data.user_id ,
-        database.Agent.visibility == 'public'
+        model_llm.Agent.create_user == session_data.user_id ,
+        model_llm.Agent.visibility == 'public'
     ]
     query = query.filter(or_(*user_filter_basic))
     total_count = query.count()
 
-    query = query.order_by(database.Agent.updated_at.desc(),database.Agent.created_at.desc())
+    query = query.order_by(model_llm.Agent.updated_at.desc(),model_llm.Agent.created_at.desc())
     if 'skip' in search_exclude and 'limit' in search_exclude:
         query = query.offset(search_exclude['skip']).limit(search_exclude['limit'])
 
     agents = query.all()
 
-    return models.SearchAgentsResponse(totalCount=total_count, list=agents)
+    return schema_llm.SearchAgentsResponse(totalCount=total_count, list=agents)
 
 
 @router.post(
     "/search_agents_all",
-    response_model=models.SearchAgentsResponse,
+    response_model=schema_llm.SearchAgentsResponse,
     dependencies=[Depends(cookie)],
     tags=["Agents"],
     description=
@@ -482,7 +484,7 @@ def search_agents(
     """
 )
 def search_agents_all(
-    search: models.AgentSearch,
+    search: schema_llm.AgentSearch,
     db: Session = Depends(get_db),
     session_data: SessionData = Depends(verifier)
 ):
@@ -492,13 +494,13 @@ def search_agents_all(
     
     total_count = query.count()
 
-    query = query.order_by(database.Agent.updated_at.desc(),database.Agent.created_at.desc())
+    query = query.order_by(model_llm.Agent.updated_at.desc(),model_llm.Agent.created_at.desc())
     if 'skip' in search_exclude and 'limit' in search_exclude:
         query = query.offset(search_exclude['skip']).limit(search_exclude['limit'])
 
     agents = query.all()
 
-    return models.SearchAgentsResponse(totalCount=total_count, list=agents)
+    return schema_llm.SearchAgentsResponse(totalCount=total_count, list=agents)
 
 
 class AgentNameRequest(BaseModel):
@@ -506,7 +508,7 @@ class AgentNameRequest(BaseModel):
 
 @router.post(
     "/check_name",
-    response_model=models.SearchAgentsResponse,  # Adjust the response model to the correct one for agents
+    response_model=schema_llm.SearchAgentsResponse,  # Adjust the response model to the correct one for agents
     dependencies=[Depends(cookie)],  # Adjust this dependency based on your authentication setup
     tags=["Agents"],
     description="""
@@ -518,14 +520,14 @@ def check_agent_name(request: AgentNameRequest, db: Session = Depends(get_db)):
     """
     지정된 이름을 가진 에이전트가 존재하는지 확인하고, 결과를 리스트 형식으로 반환합니다.
     """
-    query = db.query(database.Agent).filter(
-        database.db_comment_endpoint ,
-        database.Agent.name == request.name
+    query = db.query(model_llm.Agent).filter(
+        model_llm.db_comment_endpoint ,
+        model_llm.Agent.name == request.name
     )
     total_count = query.count()
     results = query.all()  # Fetch all matching records
 
-    return models.SearchAgentsResponse(
+    return schema_llm.SearchAgentsResponse(
         totalCount=total_count,
         list=results
     )

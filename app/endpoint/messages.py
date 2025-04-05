@@ -12,9 +12,10 @@ from ai_core.data_source.utils.utils import create_collection_name
 from ai_core.llm_api_provider import LlmApiProvider
 from app.endpoint.prompt import replace_variables
 from app.endpoint.tools import construct_file_save_path, convert_db_tool_to_pydantic
-from app.models import Message , MessageCreate
 from app.database import SessionLocal, get_db , KST
-from app import models, database
+from app import database
+from app.model import model_llm
+from app.schema import schema_llm
 from fastapi import APIRouter
 from app.endpoint.login import cookie , SessionData , verifier
 import os
@@ -81,12 +82,12 @@ def format_traceback(exc):
 
 @router.post("/messages", dependencies=[Depends(cookie)], tags=["Messages"])
 async def create_message(
-    message: MessageCreate, 
+    message: schema_llm.MessageCreate, 
     db: Session = Depends(get_db_async),
     session_data: SessionData = Depends(verifier)
 ):
     logger.info("/messages 를 시작합니다.")
-    db_conversation = db.query(database.Conversation).filter(database.db_comment_endpoint).filter(database.Conversation.conversation_id==message.conversation_id).first()
+    db_conversation = db.query(model_llm.Conversation).filter(model_llm.db_comment_endpoint).filter(model_llm.Conversation.conversation_id==message.conversation_id).first()
 
     if db_conversation is None: 
         error_message = "Conversation does not exist"
@@ -111,8 +112,8 @@ async def create_message(
         llm_api_url=_llm_api_url,
         temperature=_temperature,
         max_tokens=_max_tokens,
-        sync_conn_pool=database.sync_conn_pool, 
-        async_conn_pool=database.async_conn_pool
+        sync_conn_pool=model_llm.sync_conn_pool, 
+        async_conn_pool=model_llm.async_conn_pool
     )
     logger.warning(f"conversation instance info : {conversation_instance}") 
 
@@ -261,7 +262,7 @@ async def create_message(
             
 
     return_response = []
-    db_message_human = database.Message(
+    db_message_human = model_llm.Message(
         conversation_id = message.conversation_id,
         message_type = 'human',
         message = message.message,
@@ -288,7 +289,7 @@ async def create_message(
                 joined_texts = message_ai.message
             else:
                 joined_texts = message_ai.message
-            db_message_ai = database.Message(
+            db_message_ai = model_llm.Message(
                 conversation_id = db_conversation.conversation_id,
                 message_type = message_ai.role.value,
                 message = joined_texts,
@@ -402,7 +403,7 @@ async def create_message(
 async def test_tool_call_db(db: Session = Depends(get_db)):
     conversation_id = "1ed654f0-88d6-41f4-bc0b-d7eb760a2c8c"
     
-    db_conversation = db.query(database.Conversation).filter(database.db_comment_endpoint).filter(database.Conversation.conversation_id==conversation_id).first()
+    db_conversation = db.query(model_llm.Conversation).filter(model_llm.db_comment_endpoint).filter(model_llm.Conversation.conversation_id==conversation_id).first()
     
     _llm_api_provider=pydash.clone_deep(db_conversation.llm_api.llm_api_provider)
     _llm_model=pydash.clone_deep(db_conversation.llm_model)
@@ -426,8 +427,8 @@ async def test_tool_call_db(db: Session = Depends(get_db)):
         llm_api_url=_llm_api_url,
         temperature=_temperature,
         max_tokens=_max_tokens,
-        sync_conn_pool=database.sync_conn_pool, 
-        async_conn_pool=database.async_conn_pool
+        sync_conn_pool=model_llm.sync_conn_pool, 
+        async_conn_pool=model_llm.async_conn_pool
     )
 
     for tool in db_conversation.tools:
@@ -478,7 +479,7 @@ async def test_tool_call_db(db: Session = Depends(get_db)):
 )
 async def test_tool_call(db: Session = Depends(get_db)):
     conversation_id = "session2"
-    db_conversation = db.query(database.Conversation).filter(database.db_comment_endpoint).filter(database.Conversation.conversation_id==conversation_id).first()
+    db_conversation = db.query(model_llm.Conversation).filter(model_llm.db_comment_endpoint).filter(model_llm.Conversation.conversation_id==conversation_id).first()
 
     smart_bee_conversation = ConversationFactory.create_conversation(
         llm_api_provider="smart_bee",
@@ -487,8 +488,8 @@ async def test_tool_call(db: Session = Depends(get_db)):
         llm_api_url='https://aihub-api.sktelecom.com/aihub/v1/sandbox',
         temperature=0.2,
         max_tokens=100
-        , sync_conn_pool=database.sync_conn_pool, 
-        async_conn_pool=database.async_conn_pool
+        , sync_conn_pool=model_llm.sync_conn_pool, 
+        async_conn_pool=model_llm.async_conn_pool
     )
 
     smart_bee_conversation.add_tool('add','chajoo',r'C:\project\sktelecom\gitlab\daisy_backend\ai_core\tests\integration_tests\tool\add.py')
@@ -525,11 +526,11 @@ async def test_tool_call(db: Session = Depends(get_db)):
 
 @router.post("/messages_stream", dependencies=[Depends(cookie)], tags=["Messages"])
 async def create_message_stream(
-    message: MessageCreate, 
+    message: schema_llm.MessageCreate, 
     db: Session = Depends(get_db_async),
     session_data: SessionData = Depends(verifier)
 ):
-    db_conversation = db.query(database.Conversation).filter(database.db_comment_endpoint).filter(database.Conversation.conversation_id==message.conversation_id).first()
+    db_conversation = db.query(model_llm.Conversation).filter(model_llm.db_comment_endpoint).filter(model_llm.Conversation.conversation_id==message.conversation_id).first()
     
     logger.info(f"create_message_stream: conversation instance ")
     logger.info(f"message: {message}")
@@ -555,8 +556,8 @@ async def create_message_stream(
         llm_api_url=db_conversation.llm_api.llm_api_url,
         temperature=db_conversation.temperature,
         max_tokens=db_conversation.max_tokens,
-        sync_conn_pool=database.sync_conn_pool, 
-        async_conn_pool=database.async_conn_pool
+        sync_conn_pool=model_llm.sync_conn_pool, 
+        async_conn_pool=model_llm.async_conn_pool
     )
     
     
@@ -706,7 +707,7 @@ async def create_message_stream(
             conversation_instance.add_datasource(db_datasource.name,db_datasource.create_user_info.nickname,data_source)
             
     
-    db_message = database.Message(
+    db_message = model_llm.Message(
         conversation_id = message.conversation_id,
         message_type = 'human',
         message = message.message,
@@ -737,7 +738,7 @@ async def create_message_stream(
                     ]
                 )
                 
-                db_message_ai = database.Message(
+                db_message_ai = model_llm.Message(
                     conversation_id = db_conversation.conversation_id,
                     message_type = first_message.role.value,
                     # message_type = message_ai.raw_message.type,
@@ -851,16 +852,16 @@ async def create_message_stream(
 
     return StreamingResponse(streaming_with_cleanup(), media_type="application/json")
 
-@router.get("/messages/{message_id}", response_model=Message, dependencies=[Depends(cookie)], tags=["Messages"])
+@router.get("/messages/{message_id}", response_model=schema_llm.Message, dependencies=[Depends(cookie)], tags=["Messages"])
 def read_message(message_id: int, db: Session = Depends(get_db)):
-    db_message = db.query(database.Message).filter(database.db_comment_endpoint).filter(database.Message.message_id == message_id).first()
+    db_message = db.query(model_llm.Message).filter(model_llm.db_comment_endpoint).filter(model_llm.Message.message_id == message_id).first()
     if db_message is None:
         raise HTTPException(status_code=404, detail="Message not found")
     return db_message
 
 @router.get(
     "/conversation_messages/{conversation_id}", 
-    response_model=List[Message], 
+    response_model=List[schema_llm.Message], 
     dependencies=[Depends(cookie)], 
     tags=["Messages"]
 )
@@ -870,7 +871,7 @@ def read_message(
     limit: Optional[int] = 10, 
     db: Session = Depends(get_db)
 ):
-    db_message = db.query(database.Message).filter(database.db_comment_endpoint).filter(database.Message.conversation_id == conversation_id).order_by(database.Message.message_id.asc()).all()
+    db_message = db.query(model_llm.Message).filter(model_llm.db_comment_endpoint).filter(model_llm.Message.conversation_id == conversation_id).order_by(model_llm.Message.message_id.asc()).all()
     # if db_message is None:
     #     raise HTTPException(status_code=404, detail="Message not found")
     # Apply pagination
@@ -879,14 +880,14 @@ def read_message(
 
     return db_message
 
-@router.get("/messages", response_model=List[Message], dependencies=[Depends(cookie)], tags=["Messages"])
+@router.get("/messages", response_model=List[schema_llm.Message], dependencies=[Depends(cookie)], tags=["Messages"])
 def read_messages(skip: int = 0, limit: int = 10, db: Session = Depends(get_db)):
-    messages = db.query(database.Message).filter(database.db_comment_endpoint).offset(skip).limit(limit).all()
+    messages = db.query(model_llm.Message).filter(model_llm.db_comment_endpoint).offset(skip).limit(limit).all()
     return messages
 
-@router.put("/messages/{message_id}", response_model=Message, dependencies=[Depends(cookie)], tags=["Messages"])
-def update_message(message_id: int, message: MessageCreate, db: Session = Depends(get_db)):
-    db_message = db.query(database.Message).filter(database.db_comment_endpoint).filter(database.Message.message_id == message_id).first()
+@router.put("/messages/{message_id}", response_model=schema_llm.Message, dependencies=[Depends(cookie)], tags=["Messages"])
+def update_message(message_id: int, message: schema_llm.MessageCreate, db: Session = Depends(get_db)):
+    db_message = db.query(model_llm.Message).filter(model_llm.db_comment_endpoint).filter(model_llm.Message.message_id == message_id).first()
     if db_message is None:
         raise HTTPException(status_code=404, detail="Message not found")
     db_message.conversation_id = message.conversation_id
@@ -895,9 +896,9 @@ def update_message(message_id: int, message: MessageCreate, db: Session = Depend
     db.refresh(db_message)
     return db_message
 
-@router.delete("/messages/{message_id}", response_model=Message, dependencies=[Depends(cookie)], tags=["Messages"])
+@router.delete("/messages/{message_id}", response_model=schema_llm.Message, dependencies=[Depends(cookie)], tags=["Messages"])
 def delete_message(message_id: int, db: Session = Depends(get_db)):
-    db_message = db.query(database.Message).filter(database.db_comment_endpoint).filter(database.Message.message_id == message_id).first()
+    db_message = db.query(model_llm.Message).filter(model_llm.db_comment_endpoint).filter(model_llm.Message.message_id == message_id).first()
     if db_message is None:
         raise HTTPException(status_code=404, detail="Message not found")
     db.delete(db_message)

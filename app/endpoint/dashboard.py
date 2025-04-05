@@ -4,7 +4,9 @@ import logging
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from app import models, database
+from app import database
+from app.model import model_llm
+from app.schema import schema_llm
 from app.database import get_db
 # from app.models import Agent, Message, Conversation, conversation_agent  # Adjust import paths as needed
 from app.endpoint.login import cookie , SessionData , verifier
@@ -30,17 +32,17 @@ def get_agent_message_counts(db: Session, current_user: str):
     
     
     query = db.query(
-        database.Agent.name.label("agent_name"), 
-        func.count(database.Message.message_id).label('message_count')
+        model_llm.Agent.name.label("agent_name"), 
+        func.count(model_llm.Message.message_id).label('message_count')
     )
     
-    query = query.join(database.conversation_agent, database.Agent.agent_id == database.conversation_agent.c.agent_id)
-    query = query.join(database.Conversation, database.Conversation.conversation_id == database.conversation_agent.c.conversation_id)
-    query = query.join(database.Message, database.Message.conversation_id == database.Conversation.conversation_id)
-    query = query.filter(database.Agent.create_user == current_user)  # Filter by logged-in user
+    query = query.join(model_llm.conversation_agent, model_llm.Agent.agent_id == model_llm.conversation_agent.c.agent_id)
+    query = query.join(model_llm.Conversation, model_llm.Conversation.conversation_id == model_llm.conversation_agent.c.conversation_id)
+    query = query.join(model_llm.Message, model_llm.Message.conversation_id == model_llm.Conversation.conversation_id)
+    query = query.filter(model_llm.Agent.create_user == current_user)  # Filter by logged-in user
     comment = text("/* is_endpoint_query */ 1=1")
     query = query.filter(comment)  
-    query = query.group_by(database.Agent.name)        
+    query = query.group_by(model_llm.Agent.name)        
     db_result = query.all() 
     
     
@@ -86,17 +88,17 @@ def get_agent_message_count_private(
     """
     current_user = session_data.user_id  # Access username from session_data
     query = db.query(
-        database.Agent.name.label("agent_name"), 
-        func.count(database.Message.message_id).label('message_count')
+        model_llm.Agent.name.label("agent_name"), 
+        func.count(model_llm.Message.message_id).label('message_count')
     )
     
-    query = query.join(database.conversation_agent, database.Agent.agent_id == database.conversation_agent.c.agent_id)
-    query = query.join(database.Conversation, database.Conversation.conversation_id == database.conversation_agent.c.conversation_id)
-    query = query.join(database.Message, database.Message.conversation_id == database.Conversation.conversation_id)
-    query = query.filter(database.Agent.create_user == current_user)  # Filter by logged-in user
+    query = query.join(model_llm.conversation_agent, model_llm.Agent.agent_id == model_llm.conversation_agent.c.agent_id)
+    query = query.join(model_llm.Conversation, model_llm.Conversation.conversation_id == model_llm.conversation_agent.c.conversation_id)
+    query = query.join(model_llm.Message, model_llm.Message.conversation_id == model_llm.Conversation.conversation_id)
+    query = query.filter(model_llm.Agent.create_user == current_user)  # Filter by logged-in user
     comment = text("/* is_endpoint_query */ 1=1")
     query = query.filter(comment)  
-    query = query.group_by(database.Agent.name)        
+    query = query.group_by(model_llm.Agent.name)        
     db_result = query.all()
     
     return rows_to_dict_list(db_result)
@@ -118,24 +120,24 @@ def get_agent_message_count(
     """
     comment = text("/* is_endpoint_query */ 1=1")
     user_filter_basic = [
-        database.Agent.create_user == session_data.user_id ,
-        database.Agent.visibility == 'public'
+        model_llm.Agent.create_user == session_data.user_id ,
+        model_llm.Agent.visibility == 'public'
     ]
     query = (
         db.query(
-            database.Agent.name.label("agent_name"),
-            # database.User.nickname.label("nickname"),
-            func.count(database.Message.message_id).label("message_count")
+            model_llm.Agent.name.label("agent_name"),
+            # model_llm.User.nickname.label("nickname"),
+            func.count(model_llm.Message.message_id).label("message_count")
         )
-        .join(database.User, database.Agent.create_user == database.User.user_id)
-        .join(database.conversation_agent, database.Agent.agent_id == database.conversation_agent.c.agent_id)
-        .join(database.Conversation, database.Conversation.conversation_id == database.conversation_agent.c.conversation_id)
-        .join(database.Message, database.Message.conversation_id == database.Conversation.conversation_id)
+        .join(model_llm.User, model_llm.Agent.create_user == model_llm.User.user_id)
+        .join(model_llm.conversation_agent, model_llm.Agent.agent_id == model_llm.conversation_agent.c.agent_id)
+        .join(model_llm.Conversation, model_llm.Conversation.conversation_id == model_llm.conversation_agent.c.conversation_id)
+        .join(model_llm.Message, model_llm.Message.conversation_id == model_llm.Conversation.conversation_id)
         .filter(comment)   
         .filter(or_(*user_filter_basic))
         .group_by(
-            database.Agent.name, 
-            # database.User.nickname
+            model_llm.Agent.name, 
+            # model_llm.User.nickname
         )
     )
     result = query.all()
@@ -170,7 +172,7 @@ def get_agent_message_count(
     """
 )
 def get_grouped_token(
-    search: models.GroupedTokenRequest,
+    search: schema_llm.GroupedTokenRequest,
     db: Session = Depends(get_db)
 ):
     """
@@ -186,29 +188,29 @@ def get_grouped_token(
     
     query = (
         db.query(
-            database.LlmApi.llm_api_name.label("llm_api_name"),
-            database.Conversation.llm_model.label("llm_model"),
-            database.Agent.name.label("agent_name"),
-            database.Agent.visibility.label("visibility"),
-            func.DATE_FORMAT(database.Message.sent_at, "%Y-%m-%d").label("sent_at"),
-            func.sum(database.Message.input_token).label("total_input_token"),
-            func.sum(database.Message.output_token).label("total_output_token"),
-            func.sum(database.Message.total_token).label("total_token")
+            model_llm.LlmApi.llm_api_name.label("llm_api_name"),
+            model_llm.Conversation.llm_model.label("llm_model"),
+            model_llm.Agent.name.label("agent_name"),
+            model_llm.Agent.visibility.label("visibility"),
+            func.DATE_FORMAT(model_llm.Message.sent_at, "%Y-%m-%d").label("sent_at"),
+            func.sum(model_llm.Message.input_token).label("total_input_token"),
+            func.sum(model_llm.Message.output_token).label("total_output_token"),
+            func.sum(model_llm.Message.total_token).label("total_token")
         )
-        .join(database.conversation_agent, database.Agent.agent_id == database.conversation_agent.c.agent_id)
-        .join(database.Conversation, database.Conversation.conversation_id == database.conversation_agent.c.conversation_id)
-        .join(database.Message, database.Message.conversation_id == database.Conversation.conversation_id)
-        .join(database.LlmApi, database.Agent.llm_api_id == database.LlmApi.llm_api_id)
+        .join(model_llm.conversation_agent, model_llm.Agent.agent_id == model_llm.conversation_agent.c.agent_id)
+        .join(model_llm.Conversation, model_llm.Conversation.conversation_id == model_llm.conversation_agent.c.conversation_id)
+        .join(model_llm.Message, model_llm.Message.conversation_id == model_llm.Conversation.conversation_id)
+        .join(model_llm.LlmApi, model_llm.Agent.llm_api_id == model_llm.LlmApi.llm_api_id)
     )
     comment = text("/* is_endpoint_query */ 1=1")
     query = query.filter(comment)   
     
     # Apply filters
     if 'llm_api_list' in search_exclude and len(search_exclude['llm_api_list']) > 0:
-        query = query.filter(database.LlmApi.llm_api_id.in_(search_exclude['llm_api_list']))
+        query = query.filter(model_llm.LlmApi.llm_api_id.in_(search_exclude['llm_api_list']))
     if 'llm_model_list' in search_exclude and len(search_exclude['llm_model_list']) > 0:
-        # query = query.filter(database.Conversation.llm_model.like(f"%{search_exclude['llm_model']}%"))  # LIKE filter
-        query = query.filter(database.Conversation.llm_model.in_(search_exclude['llm_model_list']))
+        # query = query.filter(model_llm.Conversation.llm_model.like(f"%{search_exclude['llm_model']}%"))  # LIKE filter
+        query = query.filter(model_llm.Conversation.llm_model.in_(search_exclude['llm_model_list']))
     
     # Default date handling
     if not 'start_date' in search_exclude:
@@ -223,17 +225,17 @@ def get_grouped_token(
     else:
         end_date = parse_date(search_exclude['end_date'])
         
-    query = query.filter(database.Message.sent_at >= start_date)
-    query = query.filter(database.Message.sent_at <= end_date)
+    query = query.filter(model_llm.Message.sent_at >= start_date)
+    query = query.filter(model_llm.Message.sent_at <= end_date)
     
     
     # Grouping and executing the query
     query = query.group_by(
-        database.LlmApi.llm_api_name,
-        database.Conversation.llm_model,
-        database.Agent.name,
-        database.Agent.visibility,
-        func.DATE_FORMAT(database.Message.sent_at, "%Y-%m-%d")
+        model_llm.LlmApi.llm_api_name,
+        model_llm.Conversation.llm_model,
+        model_llm.Agent.name,
+        model_llm.Agent.visibility,
+        func.DATE_FORMAT(model_llm.Message.sent_at, "%Y-%m-%d")
     )
     
     result = query.all()
@@ -293,20 +295,20 @@ def get_daily_conversation_count(
     comment = text("/* is_endpoint_query */ 1=1")
     query = (
         db.query(
-            func.DATE_FORMAT(database.Conversation.started_at, "%Y-%m-%d").label("date"),  # Group by formatted date
-            database.User.nickname.label("nickname"),
-            func.count(database.Conversation.conversation_id).label("count")
+            func.DATE_FORMAT(model_llm.Conversation.started_at, "%Y-%m-%d").label("date"),  # Group by formatted date
+            model_llm.User.nickname.label("nickname"),
+            func.count(model_llm.Conversation.conversation_id).label("count")
         )
-        .join(database.User, database.Conversation.user_id == database.User.user_id)  # Join users to conversations
-        .filter(database.User.user_roll == 'ALERT')
-        .filter(database.Conversation.started_at >= start_date)  # Filter by start_date
-        .filter(database.Conversation.started_at <= end_date)    # Filter by end_date
+        .join(model_llm.User, model_llm.Conversation.user_id == model_llm.User.user_id)  # Join users to conversations
+        .filter(model_llm.User.user_roll == 'ALERT')
+        .filter(model_llm.Conversation.started_at >= start_date)  # Filter by start_date
+        .filter(model_llm.Conversation.started_at <= end_date)    # Filter by end_date
         .filter(comment)   
         .group_by(
-            func.DATE_FORMAT(database.Conversation.started_at, "%Y-%m-%d"),
-            database.User.nickname
+            func.DATE_FORMAT(model_llm.Conversation.started_at, "%Y-%m-%d"),
+            model_llm.User.nickname
         )
-        .order_by(func.DATE_FORMAT(database.Conversation.started_at, "%Y-%m-%d"))  # Sort by date
+        .order_by(func.DATE_FORMAT(model_llm.Conversation.started_at, "%Y-%m-%d"))  # Sort by date
     )
     result = query.all()
 
@@ -351,50 +353,50 @@ def get_conversation_summary(
         end_date = parse_date(end_date)
 
     # user_filter_agent = [
-    #     database.Agent.create_user == session_data.user_id ,
-    #     database.Agent.visibility == 'public'
+    #     model_llm.Agent.create_user == session_data.user_id ,
+    #     model_llm.Agent.visibility == 'public'
     # ]
     # user_filter_prompt = [
-    #     database.Prompt.create_user == session_data.user_id ,
-    #     database.Prompt.open_type == 'public'
+    #     model_llm.Prompt.create_user == session_data.user_id ,
+    #     model_llm.Prompt.open_type == 'public'
     # ]
     # user_filter_tool = [
-    #     database.Tool.create_user == session_data.user_id ,
-    #     database.Tool.visibility == 'public'
+    #     model_llm.Tool.create_user == session_data.user_id ,
+    #     model_llm.Tool.visibility == 'public'
     # ]
     # user_filter_datasource = [
-    #     database.DataSource.create_user == session_data.user_id ,
-    #     database.DataSource.visibility == 'public'
+    #     model_llm.DataSource.create_user == session_data.user_id ,
+    #     model_llm.DataSource.visibility == 'public'
     # ]
     # user_filter_conversation = [
-    #     database.Conversation.user_id == session_data.user_id,
-    #     database.Conversation.conversation_type == 'public'
+    #     model_llm.Conversation.user_id == session_data.user_id,
+    #     model_llm.Conversation.conversation_type == 'public'
     # ]
     
     # SQLAlchemy Query
     query = (
         db.query(
-            database.Conversation.conversation_type.label("conversation_type"),
-            func.count(func.distinct(database.conversation_agent.c.agent_id)).label("agent_count"),
-            func.count(func.distinct(database.conversation_prompt.c.prompt_id)).label("prompt_count"),
-            func.count(func.distinct(database.conversation_tools.c.tool_id)).label("tool_count"),
-            func.count(func.distinct(database.conversation_datasource.c.datasource_id)).label("datasource_count"),
-            func.count(database.Conversation.conversation_id).label("conversation_count")
+            model_llm.Conversation.conversation_type.label("conversation_type"),
+            func.count(func.distinct(model_llm.conversation_agent.c.agent_id)).label("agent_count"),
+            func.count(func.distinct(model_llm.conversation_prompt.c.prompt_id)).label("prompt_count"),
+            func.count(func.distinct(model_llm.conversation_tools.c.tool_id)).label("tool_count"),
+            func.count(func.distinct(model_llm.conversation_datasource.c.datasource_id)).label("datasource_count"),
+            func.count(model_llm.Conversation.conversation_id).label("conversation_count")
         )
-        .outerjoin(database.conversation_agent, database.Conversation.conversation_id == database.conversation_agent.c.conversation_id)
-        .outerjoin(database.conversation_prompt, database.Conversation.conversation_id == database.conversation_prompt.c.conversation_id)
-        .outerjoin(database.conversation_tools, database.Conversation.conversation_id == database.conversation_tools.c.conversation_id)
-        .outerjoin(database.conversation_datasource, database.Conversation.conversation_id == database.conversation_datasource.c.conversation_id)
+        .outerjoin(model_llm.conversation_agent, model_llm.Conversation.conversation_id == model_llm.conversation_agent.c.conversation_id)
+        .outerjoin(model_llm.conversation_prompt, model_llm.Conversation.conversation_id == model_llm.conversation_prompt.c.conversation_id)
+        .outerjoin(model_llm.conversation_tools, model_llm.Conversation.conversation_id == model_llm.conversation_tools.c.conversation_id)
+        .outerjoin(model_llm.conversation_datasource, model_llm.Conversation.conversation_id == model_llm.conversation_datasource.c.conversation_id)
         .filter(comment) 
-        .filter(database.Conversation.started_at >= start_date)  # Filter by start_date
-        .filter(database.Conversation.started_at <= end_date)  # Filter by end_date
+        .filter(model_llm.Conversation.started_at >= start_date)  # Filter by start_date
+        .filter(model_llm.Conversation.started_at <= end_date)  # Filter by end_date
         # .filter(or_(*user_filter_agent))
         # .filter(or_(*user_filter_prompt))
         # .filter(or_(*user_filter_tools))
         # .filter(or_(*user_filter_datasource))
         # .filter(or_(*user_filter_conversation))
-        .group_by(database.Conversation.conversation_type)  # Group by conversation_type
-        .order_by(database.Conversation.conversation_type)  # Optional: order by conversation_type
+        .group_by(model_llm.Conversation.conversation_type)  # Group by conversation_type
+        .order_by(model_llm.Conversation.conversation_type)  # Optional: order by conversation_type
     )
 
     result = query.all()
@@ -436,77 +438,77 @@ def get_visibility_summary(
         end_date = parse_date(end_date)
 
     user_filter_agent = [
-        database.Agent.create_user == session_data.user_id ,
-        database.Agent.visibility == 'public'
+        model_llm.Agent.create_user == session_data.user_id ,
+        model_llm.Agent.visibility == 'public'
     ]
     user_filter_prompt = [
-        database.Prompt.create_user == session_data.user_id ,
-        database.Prompt.open_type == 'public'
+        model_llm.Prompt.create_user == session_data.user_id ,
+        model_llm.Prompt.open_type == 'public'
     ]
     user_filter_tool = [
-        database.Tool.create_user == session_data.user_id ,
-        database.Tool.visibility == 'public'
+        model_llm.Tool.create_user == session_data.user_id ,
+        model_llm.Tool.visibility == 'public'
     ]
     user_filter_datasource = [
-        database.DataSource.create_user == session_data.user_id ,
-        database.DataSource.visibility == 'public'
+        model_llm.DataSource.create_user == session_data.user_id ,
+        model_llm.DataSource.visibility == 'public'
     ]
     user_filter_conversation = [
-        database.Conversation.user_id == session_data.user_id,
-        database.Conversation.conversation_type == 'public'
+        model_llm.Conversation.user_id == session_data.user_id,
+        model_llm.Conversation.conversation_type == 'public'
     ]
     
     # SQLAlchemy Query grouped by visibility
     conversations_query = (
         db.query(
-            database.Conversation.conversation_type.label("visibility"),
-            func.count(database.Conversation.conversation_id).label("conversation_count")
+            model_llm.Conversation.conversation_type.label("visibility"),
+            func.count(model_llm.Conversation.conversation_id).label("conversation_count")
         )
-        .filter(database.Conversation.started_at >= start_date)
-        .filter(database.Conversation.started_at <= end_date)
+        .filter(model_llm.Conversation.started_at >= start_date)
+        .filter(model_llm.Conversation.started_at <= end_date)
         .filter(comment) 
         .filter(or_(*user_filter_conversation))
-        .group_by(database.Conversation.conversation_type)
+        .group_by(model_llm.Conversation.conversation_type)
     )
 
     agents_query = (
         db.query(
-            database.Agent.visibility.label("visibility"),
-            func.count(database.Agent.agent_id).label("agent_count")
+            model_llm.Agent.visibility.label("visibility"),
+            func.count(model_llm.Agent.agent_id).label("agent_count")
         )
         .filter(comment) 
         .filter(or_(*user_filter_agent))
-        .group_by(database.Agent.visibility)
+        .group_by(model_llm.Agent.visibility)
     )
 
     prompts_query = (
         db.query(
-            database.Prompt.open_type.label("visibility"),
-            func.count(database.Prompt.prompt_id).label("prompt_count")
+            model_llm.Prompt.open_type.label("visibility"),
+            func.count(model_llm.Prompt.prompt_id).label("prompt_count")
         )
         .filter(comment) 
         .filter(or_(*user_filter_prompt))
-        .group_by(database.Prompt.open_type)
+        .group_by(model_llm.Prompt.open_type)
     )
 
     tools_query = (
         db.query(
-            database.Tool.visibility.label("visibility"),
-            func.count(database.Tool.tool_id).label("tool_count")
+            model_llm.Tool.visibility.label("visibility"),
+            func.count(model_llm.Tool.tool_id).label("tool_count")
         )
         .filter(comment) 
         .filter(or_(*user_filter_tool))
-        .group_by(database.Tool.visibility)
+        .group_by(model_llm.Tool.visibility)
     )
 
     datasources_query = (
         db.query(
-            database.DataSource.visibility.label("visibility"),
-            func.count(database.DataSource.datasource_id).label("datasource_count")
+            model_llm.DataSource.visibility.label("visibility"),
+            func.count(model_llm.DataSource.datasource_id).label("datasource_count")
         )
         .filter(comment) 
         .filter(or_(*user_filter_datasource))
-        .group_by(database.DataSource.visibility)
+        .group_by(model_llm.DataSource.visibility)
     )
 
     # Execute all queries

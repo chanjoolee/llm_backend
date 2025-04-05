@@ -28,9 +28,11 @@ from .endpoint.datasource import router as datasource_router
 from .endpoint.dashboard import router as dashbord_router
 from .endpoint.sendMail import router as sendmail_route
 from .endpoint import realtime_updates
+from .endpoint.hotel.hotel import router as hotel_router
 # from .endpoint.conversationPrompt import router as conversationPrompt_router
-from .database import SessionLocal, engine, Base, User, Conversation, Message
-from app import models, database
+from app import database
+from app.model import model_llm
+from app.schema import schema_llm
 # from .utils.session_utils import get_session 
 from uuid import UUID, uuid4
 from starlette.middleware.base import BaseHTTPMiddleware 
@@ -49,6 +51,9 @@ from ai_core.checkpoint.mysql_saver import MySQLSaver
 from sqlalchemy import Engine, event
 from app.logging_config import root_logger
 
+from app.model import model_hotel
+
+
 
 
 logger = logging.getLogger(__name__)
@@ -61,6 +66,9 @@ app = FastAPI(docs_url=None)
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
 
+# database.Base.metadata.create_all(engine)
+# model_llm.Base.metadata.create_all(database.engine)
+model_hotel.Base.metadata.create_all(database.engine)
 
 
 logger_sql = None
@@ -363,6 +371,7 @@ app.include_router(datasource_router, prefix="/api/datasource" ,tags=["Data Sour
 app.include_router(dashbord_router, prefix="/api/dashboard" ,tags=["Dashboard"])
 app.include_router(sendmail_route, prefix="/api/sendmail" ,tags=["Send Mail"])
 app.include_router(realtime_updates.router)
+app.include_router(hotel_router)
 
 # app.include_router(docs_router,tags=["Docs"])
 # app.include_router(conversationPrompt_router, prefix="/api")

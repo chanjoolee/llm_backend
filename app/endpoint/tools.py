@@ -10,7 +10,9 @@ from datetime import datetime
 from git import Repo  # You need to install GitPython
 import os
 from ai_core.tool.base import load_tool
-from app import models, database
+from app import database
+from app.model import model_llm
+from app.schema import schema_llm
 from app.database import SessionLocal, get_db
 from app.endpoint.login import cookie, SessionData, verifier
 import tempfile
@@ -24,8 +26,8 @@ logger.setLevel(logging.INFO)
 router = APIRouter()
 
 
-def convert_db_tool_to_pydantic(db_tool: database.Tool) -> models.Tool:
-    # return models.Tool(
+def convert_db_tool_to_pydantic(db_tool: model_llm.Tool) -> schema_llm.Tool:
+    # return schema_llm.Tool(
     #     tool_id=db_tool.tool_id,
     #     name=db_tool.name,
     #     description=db_tool.description,
@@ -42,14 +44,14 @@ def convert_db_tool_to_pydantic(db_tool: database.Tool) -> models.Tool:
     #     updated_at=db_tool.updated_at,
     #     create_user_info=db_tool.create_user_info
     # )
-    return models.Tool.from_orm(db_tool)
+    return schema_llm.Tool.from_orm(db_tool)
 
 def sanitize_git_url(git_url: str) -> str:
     # Replace special characters with underscores or other safe characters
     return git_url.replace("://", "_").replace("/", "_").replace(".", "_")
 
 
-def construct_file_save_path(tool: models.Tool) -> str:
+def construct_file_save_path(tool: schema_llm.Tool) -> str:
     """
     파일경로
     """
@@ -66,7 +68,7 @@ def construct_file_save_path(tool: models.Tool) -> str:
 # Create a new tool
 @router.post(
     "/tools/",
-    response_model=models.Tool,
+    response_model=schema_llm.Tool,
     dependencies=[Depends(cookie)],
     description="""
     Creates a new tool with optional code or Git configuration and tags.
@@ -84,11 +86,11 @@ def construct_file_save_path(tool: models.Tool) -> str:
     """
 )
 def create_tool(
-    tool: models.ToolCreate, 
+    tool: schema_llm.ToolCreate, 
     db: Session = Depends(get_db), 
     session_data: SessionData = Depends(verifier)
 ):
-    db_tool = database.Tool(create_user=session_data.user_id, update_user=session_data.user_id)
+    db_tool = model_llm.Tool(create_user=session_data.user_id, update_user=session_data.user_id)
     params_ex = tool.dict(exclude_unset=True)
     for key, value in params_ex.items():
         if key not in ["tags","tag_ids"]:
@@ -102,7 +104,7 @@ def create_tool(
     # Add tags to the tool
     if 'tag_ids' in params_ex and len(params_ex['tag_ids']) > 0 :
         for tag_id in params_ex['tag_ids']:
-            db_tag = db.query(database.Tag).filter(database.db_comment_endpoint).filter(database.Tag.tag_id == tag_id).first()
+            db_tag = db.query(model_llm.Tag).filter(model_llm.db_comment_endpoint).filter(model_llm.Tag.tag_id == tag_id).first()
             if db_tag:
                 # 이 부분이 맞는지. 에러가 나면 아랫구문활용.
                 # stmt = insert(
@@ -158,15 +160,15 @@ def create_tool(
     return db_tool
 
 # Read all tools
-@router.get("/tools/", response_model=List[models.Tool])
+@router.get("/tools/", response_model=List[schema_llm.Tool])
 def read_tools(skip: int = 0, limit: int = 10, db: Session = Depends(get_db)):
-    tools = db.query(database.Tool).filter(database.db_comment_endpoint).offset(skip).limit(limit).all()
+    tools = db.query(model_llm.Tool).filter(model_llm.db_comment_endpoint).offset(skip).limit(limit).all()
     return tools
 
 # Read a single tool
-@router.get("/tools/{tool_id}", response_model=models.Tool)
+@router.get("/tools/{tool_id}", response_model=schema_llm.Tool)
 def read_tool(tool_id: int, db: Session = Depends(get_db)):
-    db_tool = db.query(database.Tool).filter(database.db_comment_endpoint).filter(database.Tool.tool_id == tool_id).first()
+    db_tool = db.query(model_llm.Tool).filter(model_llm.db_comment_endpoint).filter(model_llm.Tool.tool_id == tool_id).first()
     if db_tool is None:
         raise HTTPException(status_code=404, detail="Tool not found")
     return db_tool
@@ -174,7 +176,7 @@ def read_tool(tool_id: int, db: Session = Depends(get_db)):
 # Update a tool
 @router.put(
     "/tools/{tool_id}", 
-    response_model=models.Tool,
+    response_model=schema_llm.Tool,
     dependencies=[Depends(cookie)],
     description="""
     Updates an existing tool with optional code or Git configuration and tags.
@@ -193,11 +195,11 @@ def read_tool(tool_id: int, db: Session = Depends(get_db)):
 )
 def update_tool(
     tool_id: int, 
-    tool: models.ToolUpdate, 
+    tool: schema_llm.ToolUpdate, 
     db: Session = Depends(get_db), 
     session_data: SessionData = Depends(verifier)
 ):
-    db_tool = db.query(database.Tool).filter(database.db_comment_endpoint).filter(database.Tool.tool_id == tool_id).first()
+    db_tool = db.query(model_llm.Tool).filter(model_llm.db_comment_endpoint).filter(model_llm.Tool.tool_id == tool_id).first()
     if db_tool is None:
         raise HTTPException(status_code=404, detail="Tool not found")
     
@@ -212,7 +214,7 @@ def update_tool(
         # mapping many to many
         db_tool.tags = []
         for tag_id in params_ex['tag_ids']:
-            db_tag = db.query(database.Tag).filter(database.db_comment_endpoint).filter(database.Tag.tag_id == tag_id).first()
+            db_tag = db.query(model_llm.Tag).filter(model_llm.db_comment_endpoint).filter(model_llm.Tag.tag_id == tag_id).first()
             if db_tag:
                 db_tool.tags.append(db_tag)
 
@@ -267,28 +269,28 @@ def update_tool(
     return db_tool
 
 # Delete a tool
-@router.delete("/tools/{tool_id}", response_model=models.Tool)
+@router.delete("/tools/{tool_id}", response_model=schema_llm.Tool)
 def delete_tool(tool_id: int, db: Session = Depends(get_db)):
-    db_tool = db.query(database.Tool).filter(database.db_comment_endpoint).filter(database.Tool.tool_id == tool_id).first()
+    db_tool = db.query(model_llm.Tool).filter(model_llm.db_comment_endpoint).filter(model_llm.Tool.tool_id == tool_id).first()
     if db_tool is None:
         raise HTTPException(status_code=404, detail="Tool not found")
-    tool_data = models.Tool.from_orm(db_tool)
+    tool_data = schema_llm.Tool.from_orm(db_tool)
     db.delete(db_tool)
     db.flush()
     return tool_data
 
 # Associate a tool with a conversation
-@router.post("/conversations/{conversation_id}/tools/", response_model=models.ConversationToolLink)
+@router.post("/conversations/{conversation_id}/tools/", response_model=schema_llm.ConversationToolLink)
 def associate_tool_with_conversation(conversation_id: str, tool_id: int, db: Session = Depends(get_db)):
-    db_conversation = db.query(database.Conversation).filter(database.db_comment_endpoint).filter(database.Conversation.conversation_id == conversation_id).first()
+    db_conversation = db.query(model_llm.Conversation).filter(model_llm.db_comment_endpoint).filter(model_llm.Conversation.conversation_id == conversation_id).first()
     if db_conversation is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
     
-    db_tool = db.query(database.Tool).filter(database.db_comment_endpoint).filter(database.Tool.tool_id == tool_id).first()
+    db_tool = db.query(model_llm.Tool).filter(model_llm.db_comment_endpoint).filter(model_llm.Tool.tool_id == tool_id).first()
     if db_tool is None:
         raise HTTPException(status_code=404, detail="Tool not found")
     
-    stmt = insert(database.conversation_tools).values(
+    stmt = insert(model_llm.conversation_tools).values(
         conversation_id=conversation_id,
         tool_id=tool_id
     )
@@ -345,9 +347,9 @@ def get_gitlab_token(
     
     # user
     db = SessionLocal()
-    db_user = db.query(database.User).filter(
-        database.db_comment_endpoint,
-        database.User.user_id == session_data.user_id
+    db_user = db.query(model_llm.User).filter(
+        model_llm.db_comment_endpoint,
+        model_llm.User.user_id == session_data.user_id
     ).first()
     
     if not db_user:
@@ -376,9 +378,9 @@ def get_confluence_token(
     
     # user
     db = SessionLocal()
-    db_user = db.query(database.User).filter(
-        database.db_comment_endpoint,
-        database.User.user_id == session_data.user_id
+    db_user = db.query(model_llm.User).filter(
+        model_llm.db_comment_endpoint,
+        model_llm.User.user_id == session_data.user_id
     ).first()
     
     if not db_user:
@@ -551,7 +553,7 @@ def get_gitlab_file_content(
 # Search tools
 @router.post(
     "/tools/search/",
-    response_model=models.SearchToolsResponse,
+    response_model=schema_llm.SearchToolsResponse,
     dependencies=[Depends(cookie)],
     description="""
     Searches for tools based on various criteria.
@@ -567,11 +569,11 @@ def get_gitlab_file_content(
     """
 )
 def search_tools(
-    search: models.ToolSearch, 
+    search: schema_llm.ToolSearch, 
     db: Session = Depends(get_db),
     session_data: SessionData = Depends(verifier)
 ):
-    query = db.query(database.Tool)
+    query = db.query(model_llm.Tool)
     comment = text("/* is_endpoint_query */ 1=1")
     query = query.filter(comment) 
 
@@ -583,49 +585,49 @@ def search_tools(
         if 'search_scope' in search_exclude:
             filters = []
             if "name" in search_exclude['search_scope']:
-                filters.append(database.Tool.name.like(search_pattern))
+                filters.append(model_llm.Tool.name.like(search_pattern))
             if "description" in search_exclude['search_scope']:
-                filters.append(database.Tool.description.like(search_pattern))
+                filters.append(model_llm.Tool.description.like(search_pattern))
             query = query.filter(or_(*filters))
         else:
             query = query.filter(
                 or_(
-                    database.Tool.name.like(search_pattern),
-                    database.Tool.description.like(search_pattern)
+                    model_llm.Tool.name.like(search_pattern),
+                    model_llm.Tool.description.like(search_pattern)
                 )
             )
     
     # Filter by visibility
     if 'visibility' in search_exclude and len(search_exclude['visibility']) > 0:
-        query = query.filter(database.Tool.visibility.in_(search_exclude['visibility']))
+        query = query.filter(model_llm.Tool.visibility.in_(search_exclude['visibility']))
     
     # Filter by tags
     if 'tag_ids' in search_exclude and len(search_exclude['tag_ids']) > 0:
-        query = query.filter(database.Tool.tags.any(database.Tag.tag_id.in_(search_exclude['tag_ids'])))
+        query = query.filter(model_llm.Tool.tags.any(model_llm.Tag.tag_id.in_(search_exclude['tag_ids'])))
     
     # 사용자 필터링
     user_filter_basic = [
-        database.Tool.create_user == session_data.user_id ,
-        database.Tool.visibility == 'public'
+        model_llm.Tool.create_user == session_data.user_id ,
+        model_llm.Tool.visibility == 'public'
     ]
     query = query.filter(or_(*user_filter_basic))
 
     if 'user_list' in search_exclude and len(search_exclude['user_list']) > 0:
-        query = query.filter(database.Tool.create_user .in_(search_exclude['user_list']))
+        query = query.filter(model_llm.Tool.create_user .in_(search_exclude['user_list']))
     # 사용자 End
     
     total_count = query.count()
-    query = query.order_by(database.Tool.updated_at.desc(), database.Tool.created_at.desc())   
+    query = query.order_by(model_llm.Tool.updated_at.desc(), model_llm.Tool.created_at.desc())   
     # Pagination
     if 'skip' in search_exclude and 'limit' in search_exclude:
         query = query.offset(search_exclude['skip']).limit(search_exclude['limit'])
     
     # tools = query.options(
-    #     joinedload(database.Tool.tags)
+    #     joinedload(model_llm.Tool.tags)
     # ).all()
     tools = query.all()
 
-    return models.SearchToolsResponse(totalCount=total_count, list=tools)
+    return schema_llm.SearchToolsResponse(totalCount=total_count, list=tools)
 
 
 
@@ -634,7 +636,7 @@ class ToolNameRequest(BaseModel):
 
 @router.post(
     "/tools/check_name",
-    response_model=models.SearchToolsResponse,  # Adjust the response model to the correct one for tools
+    response_model=schema_llm.SearchToolsResponse,  # Adjust the response model to the correct one for tools
     dependencies=[Depends(cookie)],  # Adjust this dependency based on your authentication setup
     description="""
     지정된 이름을 가진 도구가 존재하는지 확인합니다. 
@@ -645,14 +647,14 @@ def check_tool_name(request: ToolNameRequest, db: Session = Depends(get_db)):
     """
     지정된 이름을 가진 도구가 존재하는지 확인하고, 결과를 리스트 형식으로 반환합니다.
     """
-    query = db.query(database.Tool).filter(
-        database.db_comment_endpoint ,
-        database.Tool.name == request.name
+    query = db.query(model_llm.Tool).filter(
+        model_llm.db_comment_endpoint ,
+        model_llm.Tool.name == request.name
     )
     total_count = query.count()
     results = query.all()  # Fetch all matching records
 
-    return models.SearchToolsResponse(
+    return schema_llm.SearchToolsResponse(
         totalCount=total_count,
         list=results
     )

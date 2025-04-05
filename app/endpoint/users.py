@@ -4,9 +4,10 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import List, Optional
-from app.models import User , UserCreate , UserUpdate
 from app.database import SessionLocal, get_db
-from app import models, database
+from app import database
+from app.model import model_llm
+from app.schema import schema_llm
 from fastapi import APIRouter
 from uuid import UUID, uuid4
 from app.endpoint.login import cookie , SessionData , verifier
@@ -25,11 +26,11 @@ router = APIRouter()
 
 
 # CRUD operations for Users
-@router.post("/users", response_model=User)
-def create_user(user: UserCreate, db: Session = Depends(get_db) ):
+@router.post("/users", response_model=schema_llm.User)
+def create_user(user: schema_llm.UserCreate, db: Session = Depends(get_db) ):
     # hashed_password = pwd_context.hash(user.password.get_secret_value())
     hashed_password = utils.hash_password(user.password.get_secret_value())
-    db_user = database.User(
+    db_user = model_llm.User(
         user_id=user.user_id, 
         password=hashed_password,  
         nickname=user.nickname
@@ -40,31 +41,31 @@ def create_user(user: UserCreate, db: Session = Depends(get_db) ):
     db.refresh(db_user)
     return db_user
 
-@router.get("/users/{user_id}", response_model=User, description='특정 사용자를 검색한다.' )
+@router.get("/users/{user_id}", response_model=schema_llm.User, description='특정 사용자를 검색한다.' )
 def read_user(user_id: str = Path(..., description='검색할사용자ID'), db: Session = Depends(get_db)  ):
-    db_user = db.query(database.User).filter(database.db_comment_endpoint).filter(database.User.user_id == user_id).first()
+    db_user = db.query(model_llm.User).filter(model_llm.db_comment_endpoint).filter(model_llm.User.user_id == user_id).first()
     if db_user is None:
         raise HTTPException(status_code=404, detail="User not found")
     return db_user
 
-@router.get("/users/nickname/{nickname}", response_model=User)
+@router.get("/users/nickname/{nickname}", response_model=schema_llm.User)
 def read_nickname(nickname: str, db: Session = Depends(get_db) ):
-    db_user = db.query(database.User).filter(database.db_comment_endpoint).filter(database.User.nickname == nickname).first()
+    db_user = db.query(model_llm.User).filter(model_llm.db_comment_endpoint).filter(model_llm.User.nickname == nickname).first()
     if db_user is None:
         raise HTTPException(status_code=404, detail="NickName not found")
     return db_user
 
-@router.get("/read_all_users", response_model=List[User], dependencies=[Depends(cookie)])
+@router.get("/read_all_users", response_model=List[schema_llm.User], dependencies=[Depends(cookie)])
 def read_all_users(db: Session = Depends(get_db) ,session_data: SessionData = Depends(verifier)):
 
-    query = db.query(database.User)
+    query = db.query(model_llm.User)
     users = query.all()
     return users
 
 #search users
 @router.post(
     "/search_users", 
-    response_model=List[User],  
+    response_model=List[schema_llm.User],  
     description='''<pre>
     
     user_search_field(선택)
@@ -83,8 +84,8 @@ def read_all_users(db: Session = Depends(get_db) ,session_data: SessionData = De
 </pre>''', 
     dependencies=[Depends(cookie)], 
 )
-def search_users(search: models.UserSearch, db: Session = Depends(get_db), session_data: SessionData = Depends(verifier)):
-    query = db.query(database.User)
+def search_users(search: schema_llm.UserSearch, db: Session = Depends(get_db), session_data: SessionData = Depends(verifier)):
+    query = db.query(model_llm.User)
     comment = text("/* is_endpoint_query */ 1=1")
     query = query.filter(comment) 
 
@@ -97,12 +98,12 @@ def search_users(search: models.UserSearch, db: Session = Depends(get_db), sessi
         search_exclude['user_search_field'] != "" 
     ) :
         if(search.user_search_field == 'nickname'): 
-            query = query.filter(database.User.nickname.like(f'%{search.search_words}%'))
+            query = query.filter(model_llm.User.nickname.like(f'%{search.search_words}%'))
         if(search.user_search_field == 'email'): 
-            query = query.filter(database.User.user_id.like(f'%{search.search_words}%'))
+            query = query.filter(model_llm.User.user_id.like(f'%{search.search_words}%'))
 
     if 'user_roll' in search_exclude and len(search_exclude['user_roll']):
-        query = query.filter(database.User.user_roll == search_exclude['user_roll'])
+        query = query.filter(model_llm.User.user_roll == search_exclude['user_roll'])
 
     # Apply pagination
     if 'skip' in search_exclude and 'limit' in search_exclude :
@@ -113,16 +114,16 @@ def search_users(search: models.UserSearch, db: Session = Depends(get_db), sessi
 
 @router.put(
     "/users/{user_id}", 
-    response_model=User, 
+    response_model=schema_llm.User, 
     dependencies=[Depends(cookie)]
 )
 def update_user(
     user_id: str, 
-    user: UserUpdate, 
+    user: schema_llm.UserUpdate, 
     db: Session = Depends(get_db) ,
     session_data: SessionData = Depends(verifier)
 ):
-    db_user = db.query(database.User).filter(database.db_comment_endpoint).filter(database.User.user_id == user_id).first()
+    db_user = db.query(model_llm.User).filter(model_llm.db_comment_endpoint).filter(model_llm.User.user_id == user_id).first()
     if db_user is None:
         raise HTTPException(status_code=404, detail="User not found")
     
@@ -144,7 +145,7 @@ def update_user(
 #search users
 @router.post(
     "/update_user_role", 
-    response_model=List[User],  
+    response_model=List[schema_llm.User],  
     description='''<pre>
 
     사용자 역할을 바꾸는 API   
@@ -159,11 +160,11 @@ def update_user(
 </pre>''', 
     dependencies=[Depends(cookie)], 
 )
-def update_user_role(users: models.UserRoleUpdates ,db: Session = Depends(get_db), session_data: SessionData = Depends(verifier)):
+def update_user_role(users: schema_llm.UserRoleUpdates ,db: Session = Depends(get_db), session_data: SessionData = Depends(verifier)):
     updated_users = []
 
     for user_update in users.user_list:
-        db_user = db.query(database.User).filter(database.db_comment_endpoint).filter(database.User.user_id == user_update.user_id).first()
+        db_user = db.query(model_llm.User).filter(model_llm.db_comment_endpoint).filter(model_llm.User.user_id == user_update.user_id).first()
         if db_user is not None:
 
             update_data = user_update.dict(exclude_unset=True)
@@ -186,11 +187,11 @@ def update_user_role(users: models.UserRoleUpdates ,db: Session = Depends(get_db
     return updated_users
 
 @router.post("/user/compare_password", tags=["Users"])
-async def compare_password(user: models.UserLogin, response: Response, db: Session = Depends(get_db) ):
-    db_user = db.query(database.User).filter(
-        database.User.user_id == user.user_id
-        # , database.User.password == hashed_password
-    ).filter(database.db_comment_endpoint).first()
+async def compare_password(user: schema_llm.UserLogin, response: Response, db: Session = Depends(get_db) ):
+    db_user = db.query(model_llm.User).filter(
+        model_llm.User.user_id == user.user_id
+        # , model_llm.User.password == hashed_password
+    ).filter(model_llm.db_comment_endpoint).first()
 
     # Check if the user exists and verify the password
     if db_user is None or not utils.verify_password(user.password.get_secret_value(), db_user.password):
@@ -201,9 +202,9 @@ async def compare_password(user: models.UserLogin, response: Response, db: Sessi
         "message": "password is correct"
     }
 
-@router.delete("/users/{user_id}", response_model=User, dependencies=[Depends(cookie)],tags=["Users"])
+@router.delete("/users/{user_id}", response_model=schema_llm.User, dependencies=[Depends(cookie)],tags=["Users"])
 def delete_user(user_id: str, db: Session = Depends(get_db) ,session_data: SessionData = Depends(verifier)):
-    db_user = db.query(database.User).filter(database.db_comment_endpoint).filter(database.User.user_id == user_id).first()
+    db_user = db.query(model_llm.User).filter(model_llm.db_comment_endpoint).filter(model_llm.User.user_id == user_id).first()
     if db_user is None:
         raise HTTPException(status_code=404, detail="User not found")
     
@@ -215,7 +216,7 @@ def delete_user(user_id: str, db: Session = Depends(get_db) ,session_data: Sessi
 
 @router.put(
     "/user/{user_id}/tokens", 
-    response_model=User, 
+    response_model=schema_llm.User, 
     dependencies=[Depends(cookie)],
     description="""
     <pre>
@@ -230,11 +231,11 @@ def delete_user(user_id: str, db: Session = Depends(get_db) ,session_data: Sessi
 )
 def update_user_tokens(
     user_id: str, 
-    token_data: models.UserUpdateToken, 
+    token_data: schema_llm.UserUpdateToken, 
     db: Session = Depends(get_db), 
     session_data: SessionData = Depends(verifier)
 ):
-    user = db.query(database.User).filter(database.db_comment_endpoint).filter(database.User.user_id == user_id).first()
+    user = db.query(model_llm.User).filter(model_llm.db_comment_endpoint).filter(model_llm.User.user_id == user_id).first()
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
     
@@ -271,7 +272,7 @@ async def password_init(
     db: Session = Depends(get_db)
 ):
     logger.info("Start Password initialize")
-    db_user = db.query(database.User).filter(database.db_comment_endpoint).filter(database.User.user_id == user_id).first()
+    db_user = db.query(model_llm.User).filter(model_llm.db_comment_endpoint).filter(model_llm.User.user_id == user_id).first()
     if db_user is None:
         raise HTTPException(status_code=404, detail="User not found")
     
@@ -279,7 +280,7 @@ async def password_init(
     init_password = utils.generate_random_password()
     db_user.password = utils.hash_password(init_password)
     
-    mail_data = models.EmailRequest(
+    mail_data = schema_llm.EmailRequest(
         receiver_email=user_id,
         subject="Password for daisy is initialized",
         content=f"intialized password is  {init_password}"

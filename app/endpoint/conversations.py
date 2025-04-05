@@ -9,9 +9,10 @@ from ai_core.tool.base import load_tool
 from app.endpoint.dashboard import rows_to_dict_list
 from app.endpoint.prompt import replace_variables
 from app.endpoint.tools import construct_file_save_path, convert_db_tool_to_pydantic
-from app.models import Conversation , ConversationCreate , ConversationCopy, ConversationSearch, MessageCreate, Message
 from app.database import SessionLocal, get_db
-from app import models, database
+from app import database
+from app.model import model_llm
+from app.schema import schema_llm
 from fastapi import APIRouter
 from urllib.parse import quote
 from app.endpoint.login import cookie , SessionData , verifier
@@ -32,7 +33,7 @@ router = APIRouter()
 
 @router.post(
     "/create_conversation",
-    response_model=models.Conversation,
+    response_model=schema_llm.Conversation,
     dependencies=[Depends(cookie)],
     tags=["Conversations"],
     description="""<pre>
@@ -61,7 +62,7 @@ router = APIRouter()
     """
 )
 def create_conversation(
-    conversation: models.ConversationCreate,
+    conversation: schema_llm.ConversationCreate,
     db: Session = Depends(get_db),
     session_data: SessionData = Depends(verifier)
 ):
@@ -69,13 +70,13 @@ def create_conversation(
     # coversation_id 성성
     conversation_id = utils.generate_conversation_id()
     # converation insert
-    # db_conversation = database.Conversation(
+    # db_conversation = model_llm.Conversation(
     #     **conversation.model_dump() ,
     #     user_id = session_data.user_id ,
     #     conversation_id = conversation_id
     # )
     # db_conversation.conversation_id = conversation_id
-    db_conversation = database.Conversation(
+    db_conversation = model_llm.Conversation(
         user_id = session_data.user_id ,
         conversation_id = conversation_id
     )
@@ -88,10 +89,10 @@ def create_conversation(
         if datasource_ids:
             for datasource_id in datasource_ids:
                 # Query for an embedding with "updated" status for the current datasource
-                updated_embedding = db.query(database.Embedding).filter(
-                    database.Embedding.datasource_id == datasource_id,
-                    database.Embedding.status == "updated",
-                    database.db_comment_endpoint
+                updated_embedding = db.query(model_llm.Embedding).filter(
+                    model_llm.Embedding.datasource_id == datasource_id,
+                    model_llm.Embedding.status == "updated",
+                    model_llm.db_comment_endpoint
                 ).first()
 
                 # Immediately raise an exception if no updated embedding is found
@@ -113,14 +114,14 @@ def create_conversation(
     
     if 'prompts' in update_data:
         for i, prompt in enumerate(conversation.prompts):
-            db_prompt = db.query(database.Prompt).options(
-                joinedload(database.Prompt.promptMessage)
-            ).filter(database.db_comment_endpoint).filter(database.Prompt.prompt_id == prompt.prompt_id).first()
+            db_prompt = db.query(model_llm.Prompt).options(
+                joinedload(model_llm.Prompt.promptMessage)
+            ).filter(model_llm.db_comment_endpoint).filter(model_llm.Prompt.prompt_id == prompt.prompt_id).first()
             
             if db_prompt:
                 # insert conversation_prompt
                 # db_conversation.prompts.append(db_prompt)
-                stmt = insert(database.conversation_prompt).values(
+                stmt = insert(model_llm.conversation_prompt).values(
                     conversation_id=db_conversation.conversation_id,
                     prompt_id=db_prompt.prompt_id,
                     sort_order=i+1
@@ -135,7 +136,7 @@ def create_conversation(
                     
                     # conversation variable 에 저장한다.
                     if variable.variable_name not in existing_variables:
-                        db_variable = database.ConversationVariable(
+                        db_variable = model_llm.ConversationVariable(
                             conversation_id=db_conversation.conversation_id,
                             variable_name=variable.variable_name,
                             variable_value=variable.value
@@ -152,7 +153,7 @@ def create_conversation(
                     #     message = message.replace(f'{{{var}}}', value)
                     replaced_message = replace_variables(message, variables_dict)
                     # 변수를 replace 하자
-                    new_message = database.Message(
+                    new_message = model_llm.Message(
                         conversation_id=db_conversation.conversation_id,
                         message_type=db_prompt_message.message_type,
                         message=replaced_message,
@@ -170,13 +171,13 @@ def create_conversation(
         """
         # tool 추가 공개된 tool 을 넣는다.
         logger.info(f"tool 추가")
-        tools_public = db.query(database.Tool).filter(database.db_comment_endpoint,database.Tool.visibility=='public').all()
+        tools_public = db.query(model_llm.Tool).filter(model_llm.db_comment_endpoint,model_llm.Tool.visibility=='public').all()
         
         for db_tool in tools_public:
             db_conversation.tools.append(db_tool)
                 
         logger.info(f"datasource 추가")
-        datasource_public = db.query(database.DataSource).filter(database.db_comment_endpoint,database.DataSource.visibility=='public').all()
+        datasource_public = db.query(model_llm.DataSource).filter(model_llm.db_comment_endpoint,model_llm.DataSource.visibility=='public').all()
         
         for db_datasouce in datasource_public:
             db_conversation.datasources.append(db_datasouce)
@@ -186,20 +187,20 @@ def create_conversation(
         # Add tools to the conversation
         if 'tools' in update_data:
             for tool_id in conversation.tools:
-                db_tool = db.query(database.Tool).filter(database.db_comment_endpoint).filter(database.Tool.tool_id == tool_id).first()
+                db_tool = db.query(model_llm.Tool).filter(model_llm.db_comment_endpoint).filter(model_llm.Tool.tool_id == tool_id).first()
                 if db_tool:
                     db_conversation.tools.append(db_tool)
 
         # Add agents to the conversation
         if 'agents' in update_data:
             for agent_id in conversation.agents:
-                db_agent = db.query(database.Agent).filter(database.db_comment_endpoint).filter(database.Agent.agent_id == agent_id).first()
+                db_agent = db.query(model_llm.Agent).filter(model_llm.db_comment_endpoint).filter(model_llm.Agent.agent_id == agent_id).first()
                 if db_agent:
                     db_conversation.agents.append(db_agent)
                     
         if 'datasources' in update_data:
             for datasource_id in conversation.datasources:
-                db_datasource = db.query(database.DataSource).filter(database.db_comment_endpoint).filter(database.DataSource.datasource_id == datasource_id).first()
+                db_datasource = db.query(model_llm.DataSource).filter(model_llm.db_comment_endpoint).filter(model_llm.DataSource.datasource_id == datasource_id).first()
                 if db_datasource:
                     db_conversation.datasources.append(db_datasource)
     
@@ -210,7 +211,7 @@ def create_conversation(
 
 @router.post(
     "/copy_conversation",
-    response_model=models.Conversation,
+    response_model=schema_llm.Conversation,
     dependencies=[Depends(cookie)],
     tags=["Conversations"],
     description="""
@@ -226,15 +227,15 @@ def create_conversation(
     """
 )
 async def copy_conversation(
-    conversation: models.ConversationCopy,
+    conversation: schema_llm.ConversationCopy,
     db: Session = Depends(get_db),
     session_data: SessionData = Depends(verifier)
 ):
     # 원본
-    db_conversation_origin = db.query(database.Conversation).filter(database.db_comment_endpoint).filter(database.Conversation.conversation_id == conversation.conversation_id_origin).first()
+    db_conversation_origin = db.query(model_llm.Conversation).filter(model_llm.db_comment_endpoint).filter(model_llm.Conversation.conversation_id == conversation.conversation_id_origin).first()
     if not db_conversation_origin:
         raise HTTPException(status_code=404, detail="Conversation not found")
-    db_message_origin = db.query(database.Message).filter(database.db_comment_endpoint).filter(database.Message.conversation_id == conversation.conversation_id_origin).order_by(database.Message.message_id.asc()).all()
+    db_message_origin = db.query(model_llm.Message).filter(model_llm.db_comment_endpoint).filter(model_llm.Message.conversation_id == conversation.conversation_id_origin).order_by(model_llm.Message.message_id.asc()).all()
     
     
     
@@ -243,10 +244,10 @@ async def copy_conversation(
 
     # converation insert
     exclude_columns = {'conversation_id', 'conversation_title','user_id','last_message_id'}
-    new_db_conversation = database.Conversation(
+    new_db_conversation = model_llm.Conversation(
         **{
             column.name: getattr(db_conversation_origin, column.name)
-            for column in database.Conversation.__table__.columns
+            for column in model_llm.Conversation.__table__.columns
             if column.name not in exclude_columns
         },
         user_id = session_data.user_id ,
@@ -263,7 +264,7 @@ async def copy_conversation(
     last_message_id = None
     new_db_messages = []
     for message in db_message_origin:
-        new_message = database.Message(
+        new_message = model_llm.Message(
             conversation_id=conversation_id,
             message_type=message.message_type,
             message=message.message,
@@ -287,8 +288,8 @@ async def copy_conversation(
         llm_api_url=db_conversation_origin.llm_api.llm_api_url,
         temperature=db_conversation_origin.temperature,
         max_tokens=db_conversation_origin.max_tokens,
-        sync_conn_pool=database.sync_conn_pool, 
-        async_conn_pool=database.async_conn_pool
+        sync_conn_pool=model_llm.sync_conn_pool, 
+        async_conn_pool=model_llm.async_conn_pool
     )    
     await conversation_instance.create_agent()
     await conversation_instance.copy_conversation(conversation_id=conversation.conversation_id_origin,new_conversation_id=conversation_id)
@@ -301,7 +302,7 @@ async def copy_conversation(
 
 @router.post(
     "/convert_to_private",
-    response_model=models.Conversation,
+    response_model=schema_llm.Conversation,
     dependencies=[Depends(cookie)],
     tags=["Conversations"],
     description="""
@@ -318,25 +319,25 @@ async def copy_conversation(
     """
 )
 async def convert_to_private(
-    conversation: models.ConversationCopy,
+    conversation: schema_llm.ConversationCopy,
     db: Session = Depends(get_db),
     session_data: SessionData = Depends(verifier)
 ):
     # 원본
-    db_conversation_origin = db.query(database.Conversation).filter(database.db_comment_endpoint).filter(database.Conversation.conversation_id == conversation.conversation_id_origin).first()
+    db_conversation_origin = db.query(model_llm.Conversation).filter(model_llm.db_comment_endpoint).filter(model_llm.Conversation.conversation_id == conversation.conversation_id_origin).first()
     if not db_conversation_origin:
         raise HTTPException(status_code=404, detail="Conversation not found")
-    db_message_origin = db.query(database.Message).filter(database.db_comment_endpoint).filter(database.Message.conversation_id == conversation.conversation_id_origin).order_by(database.Message.message_id.asc()).all()
+    db_message_origin = db.query(model_llm.Message).filter(model_llm.db_comment_endpoint).filter(model_llm.Message.conversation_id == conversation.conversation_id_origin).order_by(model_llm.Message.message_id.asc()).all()
     
     # coversation_id 성성
     conversation_id = utils.generate_conversation_id()
 
     # converation insert
     exclude_columns = {'conversation_id', 'conversation_title','user_id','last_message_id', 'conversation_type'}
-    new_db_conversation = database.Conversation(
+    new_db_conversation = model_llm.Conversation(
         **{
             column.name: getattr(db_conversation_origin, column.name)
-            for column in database.Conversation.__table__.columns
+            for column in model_llm.Conversation.__table__.columns
             if column.name not in exclude_columns
         },
         conversation_type = 'private',
@@ -352,7 +353,7 @@ async def convert_to_private(
     # prompt
     for i, db_prompt in enumerate(db_conversation_origin.prompts):
         # Insert conversation_prompt
-        # stmt = insert(database.conversation_prompt).values(
+        # stmt = insert(model_llm.conversation_prompt).values(
         #     conversation_id=db_conversation.conversation_id,
         #     prompt_id=db_prompt.prompt_id,
         #     sort_order=i+1
@@ -362,7 +363,7 @@ async def convert_to_private(
 
     # variable
     for i, db_variable in enumerate(db_conversation_origin.variables):
-        new_db_variable = database.ConversationVariable(
+        new_db_variable = model_llm.ConversationVariable(
             conversation_id=new_db_conversation.conversation_id,
             variable_name=db_variable.variable_name,
             variable_value=db_variable.variable_value
@@ -400,7 +401,7 @@ async def convert_to_private(
         if input_path == 'system':
             input_path = 'system_copy'
 
-        new_message = database.Message(
+        new_message = model_llm.Message(
             conversation_id=new_db_conversation.conversation_id,
             message_type=message.message_type,
             message=message.message,
@@ -426,8 +427,8 @@ async def convert_to_private(
         llm_api_url=db_conversation_origin.llm_api.llm_api_url,
         temperature=db_conversation_origin.temperature,
         max_tokens=db_conversation_origin.max_tokens,
-        sync_conn_pool=database.sync_conn_pool, 
-        async_conn_pool=database.async_conn_pool
+        sync_conn_pool=model_llm.sync_conn_pool, 
+        async_conn_pool=model_llm.async_conn_pool
     )    
     await conversation_instance.create_agent()
     await conversation_instance.copy_conversation(conversation_id=conversation.conversation_id_origin,new_conversation_id=conversation_id)
@@ -441,7 +442,7 @@ async def convert_to_private(
 # 대화제목자동생성
 @router.post(
     "/generate_title", 
-    response_model=Conversation, 
+    response_model=schema_llm.Conversation, 
     description='''<pre>
     
     conversation_id(필수)
@@ -452,12 +453,12 @@ async def convert_to_private(
     dependencies=[Depends(cookie)], 
     tags=["Conversations"]
 )
-async def generate_title(conversation: models.ConversationGenerateTitle, db: Session = Depends(get_db), session_data: SessionData = Depends(verifier)):
+async def generate_title(conversation: schema_llm.ConversationGenerateTitle, db: Session = Depends(get_db), session_data: SessionData = Depends(verifier)):
     # 원본
-    db_conversation = db.query(database.Conversation).options(
-        joinedload(database.Conversation.messages)
-        , joinedload(database.Conversation.llm_api)
-    ).filter(database.db_comment_endpoint).filter(database.Conversation.conversation_id == conversation.conversation_id).first()
+    db_conversation = db.query(model_llm.Conversation).options(
+        joinedload(model_llm.Conversation.messages)
+        , joinedload(model_llm.Conversation.llm_api)
+    ).filter(model_llm.db_comment_endpoint).filter(model_llm.Conversation.conversation_id == conversation.conversation_id).first()
     if not db_conversation:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
@@ -468,8 +469,8 @@ async def generate_title(conversation: models.ConversationGenerateTitle, db: Ses
         llm_api_url=db_conversation.llm_api.llm_api_url,
         temperature=db_conversation.temperature,
         max_tokens=db_conversation.max_tokens,
-        sync_conn_pool=database.sync_conn_pool, 
-        async_conn_pool=database.async_conn_pool
+        sync_conn_pool=model_llm.sync_conn_pool, 
+        async_conn_pool=model_llm.async_conn_pool
     )
     await conversation_instance.create_agent()
 
@@ -482,25 +483,25 @@ async def generate_title(conversation: models.ConversationGenerateTitle, db: Ses
 
 @router.get(
     "/conversations/{conversation_id}",
-    response_model=Conversation, 
+    response_model=schema_llm.Conversation, 
     dependencies=[Depends(cookie)], 
     tags=["Conversations"]
 )
 def read_conversation(conversation_id: str, db: Session = Depends(get_db) ,session_data: SessionData = Depends(verifier)):
-    query = db.query(database.Conversation)
-    query = query.filter(database.db_comment_endpoint)
-    query = query.filter(database.Conversation.conversation_id == conversation_id)
+    query = db.query(model_llm.Conversation)
+    query = query.filter(model_llm.db_comment_endpoint)
+    query = query.filter(model_llm.Conversation.conversation_id == conversation_id)
     
     query = query.options(
-        # selectinload(database.Conversation.messages),
-        selectinload(database.Conversation.prompts),
-        selectinload(database.Conversation.tools)
-            .selectinload(database.Tool.tags),
-        selectinload(database.Conversation.llm_api)
-            .selectinload(database.LlmApi.create_user_info),
-        selectinload(database.Conversation.user_info),
-        selectinload(database.Conversation.variables),
-        selectinload(database.Conversation.agents)
+        # selectinload(model_llm.Conversation.messages),
+        selectinload(model_llm.Conversation.prompts),
+        selectinload(model_llm.Conversation.tools)
+            .selectinload(model_llm.Tool.tags),
+        selectinload(model_llm.Conversation.llm_api)
+            .selectinload(model_llm.LlmApi.create_user_info),
+        selectinload(model_llm.Conversation.user_info),
+        selectinload(model_llm.Conversation.variables),
+        selectinload(model_llm.Conversation.agents)
     )
 
     db_conversation = query.first()
@@ -511,7 +512,7 @@ def read_conversation(conversation_id: str, db: Session = Depends(get_db) ,sessi
 
 @router.get(
     "/conversations", 
-    response_model=models.SearchConversationsResponse, 
+    response_model=schema_llm.SearchConversationsResponse, 
     dependencies=[Depends(cookie)],
     tags=["Conversations"]
 )
@@ -521,7 +522,7 @@ def read_conversations(
     db: Session = Depends(get_db), 
     session_data: SessionData = Depends(verifier)
 ):
-    query = db.query(database.Conversation)
+    query = db.query(model_llm.Conversation)
     comment = text("/* is_endpoint_query */ 1=1")
     query = query.filter(comment) 
     total_count = query.count()
@@ -530,18 +531,18 @@ def read_conversations(
         query = query.offset(skip).limit(limit)
     
     conversations = query.options(
-        joinedload(database.Conversation.messages) ,
-        joinedload(database.Conversation.llm_api)
+        joinedload(model_llm.Conversation.messages) ,
+        joinedload(model_llm.Conversation.llm_api)
     ).all()
     # return conversations
-    return models.SearchConversationsResponse(totalCount=total_count, list=conversations)
+    return schema_llm.SearchConversationsResponse(totalCount=total_count, list=conversations)
 
 
 
 
 @router.post(
     "/search_conversation",
-    response_model=models.SearchConversationsResponse,
+    response_model=schema_llm.SearchConversationsResponse,
     dependencies=[Depends(cookie)],
     tags=["Conversations"],
     description="""<pre>
@@ -573,7 +574,7 @@ def read_conversations(
     """
 )
 def search_conversation(
-    search: ConversationSearch,
+    search: schema_llm.ConversationSearch,
     db: Session = Depends(get_db),
     session_data: SessionData = Depends(verifier)
 ):
@@ -582,48 +583,48 @@ def search_conversation(
     total_count = query.count()
 
 
-    query = query.order_by(database.Conversation.last_conversation_time.desc(),database.Conversation.started_at.desc())   
+    query = query.order_by(model_llm.Conversation.last_conversation_time.desc(),model_llm.Conversation.started_at.desc())   
     # Apply pagination
     if 'skip' in search_exclude and 'limit' in search_exclude :
         query = query.offset(search_exclude['skip']).limit(search_exclude['limit'])
 
     # conversations = query.options(
-    #     joinedload(database.Conversation.messages) ,
-    #     joinedload(database.Conversation.llm_api)
+    #     joinedload(model_llm.Conversation.messages) ,
+    #     joinedload(model_llm.Conversation.llm_api)
     # ).all()
     query = query.options(
-        selectinload(database.Conversation.messages),
-        selectinload(database.Conversation.prompts),
-        selectinload(database.Conversation.tools)
-            .selectinload(database.Tool.tags),
-        selectinload(database.Conversation.llm_api)
-            .selectinload(database.LlmApi.create_user_info),
-        selectinload(database.Conversation.user_info),
-        selectinload(database.Conversation.variables),
-        selectinload(database.Conversation.agents),
-        selectinload(database.Conversation.datasources)
+        selectinload(model_llm.Conversation.messages),
+        selectinload(model_llm.Conversation.prompts),
+        selectinload(model_llm.Conversation.tools)
+            .selectinload(model_llm.Tool.tags),
+        selectinload(model_llm.Conversation.llm_api)
+            .selectinload(model_llm.LlmApi.create_user_info),
+        selectinload(model_llm.Conversation.user_info),
+        selectinload(model_llm.Conversation.variables),
+        selectinload(model_llm.Conversation.agents),
+        selectinload(model_llm.Conversation.datasources)
     )
     conversations = query.all()
 
     # Convert SQLAlchemy models to Pydantic models
     # pydantic_conversations = [Conversation.model_validate(conversation) for conversation in conversations]
 
-    return models.SearchConversationsResponse(totalCount=total_count, list=conversations)
+    return schema_llm.SearchConversationsResponse(totalCount=total_count, list=conversations)
 
 def search_conversation_base(search, db, session_data):
-    query = db.query(database.Conversation)
+    query = db.query(model_llm.Conversation)
     # 대화가 일반대화인지 시스템 대화인지를 구분하기 위해
-    query = query.join(database.User, database.Conversation.user_id == database.User.user_id)  # Join users to conversations
+    query = query.join(model_llm.User, model_llm.Conversation.user_id == model_llm.User.user_id)  # Join users to conversations
     comment = text("/* is_endpoint_query */ 1=1")
     query = query.filter(comment)   
     search_exclude = search.dict(exclude_unset=True)
     logger.info("search_conversation")
 
     if 'started_at' in search_exclude:
-        query = query.filter(database.Conversation.started_at >= search_exclude['started_at'])
+        query = query.filter(model_llm.Conversation.started_at >= search_exclude['started_at'])
     
     if 'last_conversation_time' in search_exclude:
-        query = query.filter(database.Conversation.last_conversation_time <= search_exclude['last_conversation_time'])
+        query = query.filter(model_llm.Conversation.last_conversation_time <= search_exclude['last_conversation_time'])
     
     # 검색범위 제목, 메세지
     if (
@@ -634,20 +635,20 @@ def search_conversation_base(search, db, session_data):
     ) :
         search_filter_word = []
         if 'title' in search_exclude['search_range_list']: 
-            filter = database.Conversation.conversation_title.like(f'%{search_exclude['search_words']}%')
+            filter = model_llm.Conversation.conversation_title.like(f'%{search_exclude['search_words']}%')
             search_filter_word.append(filter)
-            # query = query.filter(database.Conversation.conversation_title.like(f'%{search_exclude['search_words']}%'))
+            # query = query.filter(model_llm.Conversation.conversation_title.like(f'%{search_exclude['search_words']}%'))
 
         if 'message' in search_exclude['search_range_list']:                    
             # in this place I will join message and query message.message
-            # query = query.join(database.Message).filter(func.MATCH(database.Message.message).AGAINST(search.search_words))
+            # query = query.join(model_llm.Message).filter(func.MATCH(model_llm.Message.message).AGAINST(search.search_words))
             match_query = text("MATCH(messages.message) AGAINST(:search_words IN BOOLEAN MODE)")
-            # query = query.join(database.Message).filter(match_query.params(search_words=search.search_words))
+            # query = query.join(model_llm.Message).filter(match_query.params(search_words=search.search_words))
 
-            subquery = select(database.Message.conversation_id).filter(
+            subquery = select(model_llm.Message.conversation_id).filter(
                 match_query.params(search_words=search.search_words)
-                , database.Conversation.conversation_id == database.Message.conversation_id
-            ).correlate(database.Conversation).exists()
+                , model_llm.Conversation.conversation_id == model_llm.Message.conversation_id
+            ).correlate(model_llm.Conversation).exists()
             # query = query.filter(subquery)
             search_filter_word.append(subquery)
         query = query.filter(or_(*search_filter_word))
@@ -656,25 +657,25 @@ def search_conversation_base(search, db, session_data):
     # 시스템에의해 만들어졌다고 해도 . copy 된 것이면 system 이라고 해서 검색이됨
     if 'input_path_list' in search_exclude and len(search_exclude['input_path_list']) > 0:
         match_query = text("input_path in :input_path_list ")
-        subquery = select(database.Message.conversation_id).filter(
+        subquery = select(model_llm.Message.conversation_id).filter(
             match_query.params(input_path_list=search_exclude['input_path_list'])
-            , database.Conversation.conversation_id == database.Message.conversation_id
-        ).correlate(database.Conversation).exists()
+            , model_llm.Conversation.conversation_id == model_llm.Message.conversation_id
+        ).correlate(model_llm.Conversation).exists()
         query = query.filter(subquery)
     
     # 생성자롤: MANAGER,ALERT,GUEST,OWNER
     if 'user_roll_list' in search_exclude and len(search_exclude['user_roll_list']) > 0:
         match_query = text("user_roll in :user_roll_list ")
-        subquery = select(database.User.user_id).filter(
+        subquery = select(model_llm.User.user_id).filter(
             match_query.params(user_roll_list=search_exclude['user_roll_list'])
-            , database.Conversation.user_id == database.User.user_id
-        ).correlate(database.Conversation).exists()
+            , model_llm.Conversation.user_id == model_llm.User.user_id
+        ).correlate(model_llm.Conversation).exists()
         query = query.filter(subquery)   
         
     
     # 공개 여부
     if 'conversation_type_list' in search_exclude and len(search_exclude['conversation_type_list']) > 0:
-        query = query.filter(database.Conversation.conversation_type.in_(search_exclude['conversation_type_list']))
+        query = query.filter(model_llm.Conversation.conversation_type.in_(search_exclude['conversation_type_list']))
     
     # # 콤포넌트 나중에 
     # if search.component_list:
@@ -682,31 +683,31 @@ def search_conversation_base(search, db, session_data):
     
     # 사용자 필터링
     user_filter_basic = [
-        database.Conversation.user_id == session_data.user_id,
-        database.Conversation.conversation_type == 'public'
+        model_llm.Conversation.user_id == session_data.user_id,
+        model_llm.Conversation.conversation_type == 'public'
     ]
     query = query.filter(or_(*user_filter_basic))
     if 'user_list' in search_exclude and len(search_exclude['user_list']) > 0:
-        query = query.filter(database.Conversation.user_id.in_(search_exclude['user_list']))
+        query = query.filter(model_llm.Conversation.user_id.in_(search_exclude['user_list']))
     
     # 사용자 End
     
     if 'llm_api_list' in search_exclude and len(search_exclude['llm_api_list']) > 0:
-        query = query.filter(database.Conversation.llm_api_id.in_(search_exclude['llm_api_list']))
+        query = query.filter(model_llm.Conversation.llm_api_id.in_(search_exclude['llm_api_list']))
     
     if 'llm_model_list' in search_exclude and len(search_exclude['llm_model_list']) > 0:
         # 본테이블에서 검색한다.
-        query = query.filter(database.Conversation.llm_model.in_(search_exclude['llm_model_list']))
+        query = query.filter(model_llm.Conversation.llm_model.in_(search_exclude['llm_model_list']))
         
     if 'datasource_list' in search_exclude and len(search_exclude['datasource_list']) > 0:
         subquery = (
-            select(database.conversation_datasource.c.conversation_id)
-            .join(database.DataSource, database.DataSource.datasource_id == database.conversation_datasource.c.datasource_id)
-            .filter(database.DataSource.datasource_id.in_(search_exclude['datasource_list']))
+            select(model_llm.conversation_datasource.c.conversation_id)
+            .join(model_llm.DataSource, model_llm.DataSource.datasource_id == model_llm.conversation_datasource.c.datasource_id)
+            .filter(model_llm.DataSource.datasource_id.in_(search_exclude['datasource_list']))
         )
         
         query = query.filter(
-            exists(subquery.where(database.Conversation.conversation_id == database.conversation_datasource.c.conversation_id))
+            exists(subquery.where(model_llm.Conversation.conversation_id == model_llm.conversation_datasource.c.conversation_id))
         )
         
     filter_component = []  
@@ -714,42 +715,42 @@ def search_conversation_base(search, db, session_data):
         for component in search_exclude['component_list']:
             if component['type'] == 'prompt':
                 subquery = (
-                    select(database.conversation_prompt.c.conversation_id)
-                    .join(database.Prompt, database.Prompt.prompt_id == database.conversation_prompt.c.prompt_id)
-                    .filter(database.Prompt.prompt_id  == component['id']))
+                    select(model_llm.conversation_prompt.c.conversation_id)
+                    .join(model_llm.Prompt, model_llm.Prompt.prompt_id == model_llm.conversation_prompt.c.prompt_id)
+                    .filter(model_llm.Prompt.prompt_id  == component['id']))
                 filter_component.append(
-                    exists(subquery.where(database.Conversation.conversation_id == database.conversation_prompt.c.conversation_id))
+                    exists(subquery.where(model_llm.Conversation.conversation_id == model_llm.conversation_prompt.c.conversation_id))
                 )
             if component['type'] == 'tool':
                 subquery = (
-                    select(database.conversation_tools.c.conversation_id)
-                    .join(database.Tool, database.Tool.tool_id == database.conversation_tools.c.tool_id)
-                    .filter(database.Tool.tool_id  == component['id']))
+                    select(model_llm.conversation_tools.c.conversation_id)
+                    .join(model_llm.Tool, model_llm.Tool.tool_id == model_llm.conversation_tools.c.tool_id)
+                    .filter(model_llm.Tool.tool_id  == component['id']))
                 filter_component.append(
-                    exists(subquery.where(database.Conversation.conversation_id == database.conversation_tools.c.conversation_id))
+                    exists(subquery.where(model_llm.Conversation.conversation_id == model_llm.conversation_tools.c.conversation_id))
                 )
             if component['type'] == 'agent':
                 subquery = (
-                    select(database.conversation_agent.c.conversation_id)
-                    .join(database.Agent, database.Agent.agent_id == database.conversation_agent.c.agent_id)
-                    .filter(database.Agent.agent_id  == component['id']))
+                    select(model_llm.conversation_agent.c.conversation_id)
+                    .join(model_llm.Agent, model_llm.Agent.agent_id == model_llm.conversation_agent.c.agent_id)
+                    .filter(model_llm.Agent.agent_id  == component['id']))
                 filter_component.append(
-                    exists(subquery.where(database.Conversation.conversation_id == database.conversation_agent.c.conversation_id))
+                    exists(subquery.where(model_llm.Conversation.conversation_id == model_llm.conversation_agent.c.conversation_id))
                 )
             if component['type'] == 'datasource':
                 subquery = (
-                    select(database.conversation_datasource.c.conversation_id)
-                    .join(database.DataSource, database.DataSource.datasource_id == database.conversation_datasource.c.datasource_id)
-                    .filter(database.DataSource.datasource_id == component['id'])
+                    select(model_llm.conversation_datasource.c.conversation_id)
+                    .join(model_llm.DataSource, model_llm.DataSource.datasource_id == model_llm.conversation_datasource.c.datasource_id)
+                    .filter(model_llm.DataSource.datasource_id == component['id'])
                 )
                 filter_component.append(
-                    exists(subquery.where(database.Conversation.conversation_id == database.conversation_datasource.c.conversation_id))
+                    exists(subquery.where(model_llm.Conversation.conversation_id == model_llm.conversation_datasource.c.conversation_id))
                 )
     query = query.filter(or_(*filter_component))
         
     return query,search_exclude
     # return conversations
-    # return [models.Conversation.model_validate(conversation) for conversation in conversations]
+    # return [schema_llm.Conversation.model_validate(conversation) for conversation in conversations]
 
 @router.post(
     "/search_conversation_dashboard",
@@ -763,31 +764,31 @@ def search_conversation_base(search, db, session_data):
     
 )
 def search_conversation_dashboard(
-    search: ConversationSearch,
+    search: schema_llm.ConversationSearch,
     db: Session = Depends(get_db),
     session_data: SessionData = Depends(verifier)
 ):
     query, search_exclude = search_conversation_base(search, db, session_data)
     # 그룹 날자별 
     grouped_query = query.with_entities(
-        func.DATE_FORMAT(database.Conversation.started_at, "%Y-%m-%d").label("formatted_date"),
+        func.DATE_FORMAT(model_llm.Conversation.started_at, "%Y-%m-%d").label("formatted_date"),
         func.sum(
             case(
-                (database.User.user_roll == 'ALERT', 1),  # If user.roll is 'ALERT', count it
+                (model_llm.User.user_roll == 'ALERT', 1),  # If user.roll is 'ALERT', count it
                 else_=0  # Otherwise, count as 0
             )
         ).label("system_count"),
         func.sum(
             case(
-                (database.User.user_roll != 'ALERT', 1),  # If user.roll is not 'ALERT', count it
+                (model_llm.User.user_roll != 'ALERT', 1),  # If user.roll is not 'ALERT', count it
                 else_=0  # Otherwise, count as 0
             )
         ).label("general_count")
     ).group_by(
-        func.DATE_FORMAT(database.Conversation.started_at, "%Y-%m-%d")
+        func.DATE_FORMAT(model_llm.Conversation.started_at, "%Y-%m-%d")
 
     ).order_by(
-        func.DATE_FORMAT(database.Conversation.started_at, "%Y-%m-%d")  # Order by date
+        func.DATE_FORMAT(model_llm.Conversation.started_at, "%Y-%m-%d")  # Order by date
     )
     # Fetch grouped data
     grouped_data = grouped_query.all()
@@ -797,7 +798,7 @@ def search_conversation_dashboard(
 
 @router.post(
     "/search_conversation_all",
-    response_model=models.SearchConversationsResponse,
+    response_model=schema_llm.SearchConversationsResponse,
     dependencies=[Depends(cookie)],
     tags=["Conversations"],
     description="""<pre>
@@ -824,22 +825,22 @@ def search_conversation_dashboard(
     """
 )
 def search_conversation_all(
-    search: ConversationSearch,
+    search: schema_llm.ConversationSearch,
     db: Session = Depends(get_db),
     session_data: SessionData = Depends(verifier)
 ):
-    query = db.query(database.Conversation)
+    query = db.query(model_llm.Conversation)
     comment = text("/* is_endpoint_query */ 1=1")
     query = query.filter(comment)   
-    # .filter(database.db_comment_endpoint)
+    # .filter(model_llm.db_comment_endpoint)
     search_exclude = search.dict(exclude_unset=True)
     
 
     if 'started_at' in search_exclude:
-        query = query.filter(database.Conversation.started_at >= search_exclude['started_at'])
+        query = query.filter(model_llm.Conversation.started_at >= search_exclude['started_at'])
     
     if 'last_conversation_time' in search_exclude:
-        query = query.filter(database.Conversation.last_conversation_time <= search_exclude['last_conversation_time'])
+        query = query.filter(model_llm.Conversation.last_conversation_time <= search_exclude['last_conversation_time'])
     
     # 검색범위 제목, 메세지
     if (
@@ -850,27 +851,27 @@ def search_conversation_all(
     ) :
         search_filter_word = []
         if 'title' in search_exclude['search_range_list']: 
-            filter = database.Conversation.conversation_title.like(f'%{search_exclude['search_words']}%')
+            filter = model_llm.Conversation.conversation_title.like(f'%{search_exclude['search_words']}%')
             search_filter_word.append(filter)
-            # query = query.filter(database.Conversation.conversation_title.like(f'%{search_exclude['search_words']}%'))
+            # query = query.filter(model_llm.Conversation.conversation_title.like(f'%{search_exclude['search_words']}%'))
 
         if 'message' in search_exclude['search_range_list']:                    
             # in this place I will join message and query message.message
-            # query = query.join(database.Message).filter(func.MATCH(database.Message.message).AGAINST(search.search_words))
+            # query = query.join(model_llm.Message).filter(func.MATCH(model_llm.Message.message).AGAINST(search.search_words))
             match_query = text("MATCH(messages.message) AGAINST(:search_words IN BOOLEAN MODE)")
-            # query = query.join(database.Message).filter(match_query.params(search_words=search.search_words))
+            # query = query.join(model_llm.Message).filter(match_query.params(search_words=search.search_words))
 
-            subquery = select(database.Message.conversation_id).filter(
+            subquery = select(model_llm.Message.conversation_id).filter(
                 match_query.params(search_words=search.search_words)
-                , database.Conversation.conversation_id == database.Message.conversation_id
-            ).correlate(database.Conversation).exists()
+                , model_llm.Conversation.conversation_id == model_llm.Message.conversation_id
+            ).correlate(model_llm.Conversation).exists()
             # query = query.filter(subquery)
             search_filter_word.append(subquery)
         query = query.filter(or_(*search_filter_word))
 
     # 공개 여부
     if 'conversation_type_list' in search_exclude and len(search_exclude['conversation_type_list']) > 0:
-        query = query.filter(database.Conversation.conversation_type.in_(search_exclude['conversation_type_list']))
+        query = query.filter(model_llm.Conversation.conversation_type.in_(search_exclude['conversation_type_list']))
     
     # # 콤포넌트 나중에 
     # if search.component_list:
@@ -878,64 +879,64 @@ def search_conversation_all(
     
 
     if 'user_list' in search_exclude and len(search_exclude['user_list']) > 0:
-        query = query.filter(database.Conversation.user_id.in_(search_exclude['user_list']))
+        query = query.filter(model_llm.Conversation.user_id.in_(search_exclude['user_list']))
     
     # 사용자 End
     
     if 'llm_api_list' in search_exclude and len(search_exclude['llm_api_list']) > 0:
-        query = query.filter(database.Conversation.llm_api_id.in_(search_exclude['llm_api_list']))
+        query = query.filter(model_llm.Conversation.llm_api_id.in_(search_exclude['llm_api_list']))
     
     if 'llm_model_list' in search_exclude and len(search_exclude['llm_model_list']) > 0:
-        query = query.filter(database.Conversation.llm_model.in_(search_exclude['llm_model_list']))
+        query = query.filter(model_llm.Conversation.llm_model.in_(search_exclude['llm_model_list']))
         
     if 'datasource_list' in search_exclude and len(search_exclude['datasource_list']) > 0:
         subquery = (
-            select(database.conversation_datasource.c.conversation_id)
-            .join(database.DataSource, database.DataSource.datasource_id == database.conversation_datasource.c.datasource_id)
-            .filter(database.DataSource.datasource_id.in_(search_exclude['datasource_list']))
+            select(model_llm.conversation_datasource.c.conversation_id)
+            .join(model_llm.DataSource, model_llm.DataSource.datasource_id == model_llm.conversation_datasource.c.datasource_id)
+            .filter(model_llm.DataSource.datasource_id.in_(search_exclude['datasource_list']))
         )
         
         query = query.filter(
-            exists(subquery.where(database.Conversation.conversation_id == database.conversation_datasource.c.conversation_id))
+            exists(subquery.where(model_llm.Conversation.conversation_id == model_llm.conversation_datasource.c.conversation_id))
         )
         
     total_count = query.count()
 
     query = query.options(
-        selectinload(database.Conversation.messages),
-        selectinload(database.Conversation.prompts),
-        selectinload(database.Conversation.tools)
-            .selectinload(database.Tool.tags),
-        selectinload(database.Conversation.llm_api)
-            .selectinload(database.LlmApi.create_user_info),
-        selectinload(database.Conversation.user_info),
-        selectinload(database.Conversation.variables),
-        selectinload(database.Conversation.agents),
-        selectinload(database.Conversation.datasources)
+        selectinload(model_llm.Conversation.messages),
+        selectinload(model_llm.Conversation.prompts),
+        selectinload(model_llm.Conversation.tools)
+            .selectinload(model_llm.Tool.tags),
+        selectinload(model_llm.Conversation.llm_api)
+            .selectinload(model_llm.LlmApi.create_user_info),
+        selectinload(model_llm.Conversation.user_info),
+        selectinload(model_llm.Conversation.variables),
+        selectinload(model_llm.Conversation.agents),
+        selectinload(model_llm.Conversation.datasources)
     )
 
-    query = query.order_by(database.Conversation.last_conversation_time.desc())   
+    query = query.order_by(model_llm.Conversation.last_conversation_time.desc())   
     # Apply pagination
     if 'skip' in search_exclude and 'limit' in search_exclude :
         query = query.offset(search_exclude['skip']).limit(search_exclude['limit'])
 
     # conversations = query.options(
-    #     joinedload(database.Conversation.messages) ,
-    #     joinedload(database.Conversation.llm_api)
+    #     joinedload(model_llm.Conversation.messages) ,
+    #     joinedload(model_llm.Conversation.llm_api)
     # ).all()
     conversations = query.all()
 
     # Convert SQLAlchemy models to Pydantic models
     # pydantic_conversations = [Conversation.model_validate(conversation) for conversation in conversations]
 
-    return models.SearchConversationsResponse(totalCount=total_count, list=conversations)
+    return schema_llm.SearchConversationsResponse(totalCount=total_count, list=conversations)
     # return conversations
-    # return [models.Conversation.model_validate(conversation) for conversation in conversations]
+    # return [schema_llm.Conversation.model_validate(conversation) for conversation in conversations]
 
 
 @router.put(
     "/conversations/{conversation_id}", 
-    response_model=Conversation, 
+    response_model=schema_llm.Conversation, 
     dependencies=[Depends(cookie)],
     tags=["Conversations"],
     description="""<pre>
@@ -965,7 +966,7 @@ def search_conversation_all(
     </pre>
     """
 )
-def update_conversation(conversation_id: str, conversation: models.ConversationUpdate, db: Session = Depends(get_db) ,session_data: SessionData = Depends(verifier)):
+def update_conversation(conversation_id: str, conversation: schema_llm.ConversationUpdate, db: Session = Depends(get_db) ,session_data: SessionData = Depends(verifier)):
     """
     01. 프롬프트 데이타가 있다면, 대화가 시작되었으면 중단한다.
     02. 기존 테이블로직 삭제
@@ -977,7 +978,7 @@ def update_conversation(conversation_id: str, conversation: models.ConversationU
 
     """
     
-    db_conversation = db.query(database.Conversation).filter(database.db_comment_endpoint).filter(database.Conversation.conversation_id == conversation_id).first()
+    db_conversation = db.query(model_llm.Conversation).filter(model_llm.db_comment_endpoint).filter(model_llm.Conversation.conversation_id == conversation_id).first()
     if db_conversation is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
     
@@ -985,10 +986,10 @@ def update_conversation(conversation_id: str, conversation: models.ConversationU
     if 'datasources' in params_ex:
         for datasource_id in params_ex['datasources']:
             # Query for an embedding with "updated" status for the current datasource
-            updated_embedding = db.query(database.Embedding).filter(
-                database.Embedding.datasource_id == datasource_id,
-                database.Embedding.status == "updated",
-                database.db_comment_endpoint
+            updated_embedding = db.query(model_llm.Embedding).filter(
+                model_llm.Embedding.datasource_id == datasource_id,
+                model_llm.Embedding.status == "updated",
+                model_llm.db_comment_endpoint
             ).first()
 
             # Immediately raise an exception if no updated embedding is found
@@ -1026,22 +1027,22 @@ def update_conversation(conversation_id: str, conversation: models.ConversationU
             - conversation_variables
         """
         # Delete related conversation_prompts
-        # stmt = delete(database.conversation_prompt).where(database.conversation_prompt.c.conversation_id == conversation_id)
+        # stmt = delete(model_llm.conversation_prompt).where(model_llm.conversation_prompt.c.conversation_id == conversation_id)
         # db.execute(stmt)
         db_conversation.prompts = []
         # Delete related conversation_variables. many to many 가 아니므로 명시적으로 삭제한다.
-        db.query(database.ConversationVariable).filter(database.db_comment_endpoint).filter(database.ConversationVariable.conversation_id == conversation_id).delete(synchronize_session='fetch')
+        db.query(model_llm.ConversationVariable).filter(model_llm.db_comment_endpoint).filter(model_llm.ConversationVariable.conversation_id == conversation_id).delete(synchronize_session='fetch')
         # db.flush()
         db.flush()
 
         for i, prompt in enumerate(params_ex['prompts']):
-            db_prompt = db.query(database.Prompt).options(
-                joinedload(database.Prompt.promptMessage)
-            ).filter(database.db_comment_endpoint).filter(database.Prompt.prompt_id == prompt['prompt_id']).first()
+            db_prompt = db.query(model_llm.Prompt).options(
+                joinedload(model_llm.Prompt.promptMessage)
+            ).filter(model_llm.db_comment_endpoint).filter(model_llm.Prompt.prompt_id == prompt['prompt_id']).first()
             
             if db_prompt:
                 # Insert conversation_prompt
-                stmt = insert(database.conversation_prompt).values(
+                stmt = insert(model_llm.conversation_prompt).values(
                     conversation_id=db_conversation.conversation_id,
                     prompt_id=db_prompt.prompt_id,
                     sort_order=i+1
@@ -1052,7 +1053,7 @@ def update_conversation(conversation_id: str, conversation: models.ConversationU
                 existing_variables = set()
                 for variable in prompt['variables']:
                     if variable.variable_name not in existing_variables:
-                        db_variable = database.ConversationVariable(
+                        db_variable = model_llm.ConversationVariable(
                             conversation_id=db_conversation.conversation_id,
                             variable_name=variable.variable_name,
                             variable_value=variable.value
@@ -1068,7 +1069,7 @@ def update_conversation(conversation_id: str, conversation: models.ConversationU
                     #     message = message.replace(f'{{{var}}}', value)
                     replaced_message = replace_variables(message, variables_dict)
                     # 변수를 replace 하자
-                    new_message = database.Message(
+                    new_message = model_llm.Message(
                         conversation_id=db_conversation.conversation_id,
                         message_type=db_prompt_message.message_type,
                         message=replaced_message,
@@ -1088,13 +1089,13 @@ def update_conversation(conversation_id: str, conversation: models.ConversationU
         """
         # tool 추가 공개된 tool 을 넣는다.
         logger.info(f"tool 추가")
-        tools_public = db.query(database.Tool).filter(database.Tool.visibility=='public').all()
+        tools_public = db.query(model_llm.Tool).filter(model_llm.Tool.visibility=='public').all()
         db_conversation.tools = []
         for db_tool in tools_public:
             db_conversation.tools.append(db_tool)
                 
         logger.info(f"datasource 추가")
-        datasource_public = db.query(database.DataSource).filter(database.DataSource.visibility=='public').all()
+        datasource_public = db.query(model_llm.DataSource).filter(model_llm.DataSource.visibility=='public').all()
         db_conversation.datasources = []
         for db_datasouce in datasource_public:
             db_conversation.datasources.append(db_datasouce)
@@ -1104,7 +1105,7 @@ def update_conversation(conversation_id: str, conversation: models.ConversationU
             # 이 부분이 먹히는지 테스트한다. many to many 는 먹힌다.
             db_conversation.tools = []
             for tool_id in params_ex['tools']:
-                db_tool = db.query(database.Tool).filter(database.db_comment_endpoint).filter(database.Tool.tool_id == tool_id).first()
+                db_tool = db.query(model_llm.Tool).filter(model_llm.db_comment_endpoint).filter(model_llm.Tool.tool_id == tool_id).first()
                 if db_tool:
                     db_conversation.tools.append(db_tool)
         
@@ -1113,14 +1114,14 @@ def update_conversation(conversation_id: str, conversation: models.ConversationU
         if 'agents' in params_ex:
             db_conversation.agents = []
             for agent_id in conversation.agents:
-                db_agent = db.query(database.Agent).filter(database.db_comment_endpoint).filter(database.Agent.agent_id == agent_id).first()
+                db_agent = db.query(model_llm.Agent).filter(model_llm.db_comment_endpoint).filter(model_llm.Agent.agent_id == agent_id).first()
                 if db_agent:
                     db_conversation.agents.append(db_agent)
                     
         if 'datasources' in params_ex:
             db_conversation.datasources = []
             for datasource_id in conversation.datasources:
-                db_datasource = db.query(database.DataSource).filter(database.db_comment_endpoint).filter(database.DataSource.datasource_id == datasource_id).first()
+                db_datasource = db.query(model_llm.DataSource).filter(model_llm.db_comment_endpoint).filter(model_llm.DataSource.datasource_id == datasource_id).first()
                 if db_datasource:
                     db_conversation.datasources.append(db_datasource)
 
@@ -1128,9 +1129,9 @@ def update_conversation(conversation_id: str, conversation: models.ConversationU
     db.refresh(db_conversation)
     return db_conversation
 
-@router.delete("/conversations/{conversation_id}", response_model=Conversation, dependencies=[Depends(cookie)],tags=["Conversations"])
+@router.delete("/conversations/{conversation_id}", response_model=schema_llm.Conversation, dependencies=[Depends(cookie)],tags=["Conversations"])
 async def delete_conversation(conversation_id: str, db: Session = Depends(get_db) ,session_data: SessionData = Depends(verifier)):
-    db_conversation = db.query(database.Conversation).filter(database.db_comment_endpoint).filter(database.Conversation.conversation_id == conversation_id).first()
+    db_conversation = db.query(model_llm.Conversation).filter(model_llm.db_comment_endpoint).filter(model_llm.Conversation.conversation_id == conversation_id).first()
     if db_conversation is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
     
@@ -1152,8 +1153,8 @@ async def delete_conversation(conversation_id: str, db: Session = Depends(get_db
         llm_api_url=db_conversation.llm_api.llm_api_url,
         temperature=db_conversation.temperature,
         max_tokens=db_conversation.max_tokens,
-        sync_conn_pool=database.sync_conn_pool, 
-        async_conn_pool=database.async_conn_pool
+        sync_conn_pool=model_llm.sync_conn_pool, 
+        async_conn_pool=model_llm.async_conn_pool
     )  
     await conversation_instance.clear(conversation_id)
     

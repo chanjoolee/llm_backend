@@ -14,7 +14,8 @@ from sqlalchemy import text
 from starlette.middleware.base import BaseHTTPMiddleware
 from typing import List, Optional
 from app.database import KST, SessionLocal, get_db
-from app import models, database
+from app.model import model_llm
+from app.schema import schema_llm
 from sqlalchemy.orm import Session
 from app.utils.utils import pwd_context , hash_password ,  verify_password
 
@@ -46,10 +47,10 @@ class DatabaseBackend:
         self.expiration_minutes = expiration_minutes
         
     async def create(self, session_id: UUID, data: SessionData):
-        """Create a new session in the database."""
+        """Create a new session in the model_llm."""
         with self.db_session_factory() as db:
             expires_at = datetime.now(KST) + timedelta(minutes=self.expiration_minutes)
-            db_session_store = database.SessionStoreBackend(
+            db_session_store = model_llm.SessionStoreBackend(
                 session_id=str(session_id),
                 user_id=data.user_id,
                 session_data=data.dict(),  # Directly store the dictionary
@@ -59,9 +60,9 @@ class DatabaseBackend:
             db.commit()
 
     async def read(self, session_id: UUID) -> Optional[SessionData]:
-        """Read session data from the database."""
+        """Read session data from the model_llm."""
         with self.db_session_factory() as db:
-            db_session_store = db.query(database.SessionStoreBackend).filter(database.SessionStoreBackend.session_id == str(session_id)).first()
+            db_session_store = db.query(model_llm.SessionStoreBackend).filter(model_llm.SessionStoreBackend.session_id == str(session_id)).first()
             db_expires_at = db_session_store.expires_at.replace(tzinfo=KST)
             # if not db_session_store or (db_session_store.expires_at and db_expires_at < datetime.now(KST)):
             # # 세션타임을 생각하지 않는다.
@@ -71,9 +72,9 @@ class DatabaseBackend:
 
 
     async def delete(self, session_id: UUID):
-        """Delete a session from the database."""
+        """Delete a session from the model_llm."""
         with self.db_session_factory() as db:
-            db.query(database.SessionStoreBackend).filter(database.SessionStoreBackend.session_id == str(session_id)).delete()
+            db.query(model_llm.SessionStoreBackend).filter(model_llm.SessionStoreBackend.session_id == str(session_id)).delete()
             db.commit()
 
 cookie_params = CookieParameters()
@@ -175,13 +176,13 @@ class CheckSessionMiddleware(BaseHTTPMiddleware):
    
 
 @router.post("/create_session", tags=["Session"])
-async def create_session(login: models.UserLogin, response: Response, db: Session = Depends(get_db) ):
-    query = db.query(database.User)
+async def create_session(login: schema_llm.UserLogin, response: Response, db: Session = Depends(get_db) ):
+    query = db.query(model_llm.User)
     comment = text("/* is_endpoint_query */ 1=1")
     query = query.filter(comment) 
     query = query.filter(
-        database.User.user_id == login.user_id 
-        # , database.User.password == hashed_password
+        model_llm.User.user_id == login.user_id 
+        # , model_llm.User.password == hashed_password
     )
     db_user = query.first()
 

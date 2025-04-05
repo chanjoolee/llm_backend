@@ -15,9 +15,10 @@ from ai_core.tool.base import load_tool
 from app.endpoint.messages import get_sum_token
 from app.endpoint.prompt import replace_variables
 from app.endpoint.tools import construct_file_save_path, convert_db_tool_to_pydantic
-from app.models import Message , MessageCreate
 from app.database import SessionLocal, get_db , KST
-from app import models, database
+from app import database
+from app.model import model_llm
+from app.schema import schema_llm
 from fastapi import APIRouter
 from app.endpoint.login import cookie , SessionData , verifier
 import os
@@ -55,32 +56,32 @@ def get_db_async():
 
 @router.post("/ask", 
     # dependencies=[Depends(cookie)], 
-    response_model=List[Message],
+    response_model=List[schema_llm.Message],
     tags=["System Message"],
     description="""
     시스템 대화를 위한 주소입니다.
     """
 )
 async def ask_system_message(
-    message: models.SystemMessageCreate ,
+    message: schema_llm.SystemMessageCreate ,
     db: Session = Depends(get_db)
 ):
     # check user
-    db_owner = db.query(database.User).filter(database.User.user_roll=='SYSTEM').first()
+    db_owner = db.query(model_llm.User).filter(model_llm.User.user_roll=='SYSTEM').first()
     if db_owner is None:
         raise HTTPException(status_code=404, detail="User of 'SYSTEM' is not found")
     
     # check llm api
-    llm_api_query = db.query(database.LlmApi).filter(database.LlmApi.llm_api_provider=='smart_bee')
-    llm_api_query = llm_api_query.filter( database.LlmApi.llm_model=='gpt-4o')
-    llm_api_query = llm_api_query.filter( database.LlmApi.llm_api_type=='public')
+    llm_api_query = db.query(model_llm.LlmApi).filter(model_llm.LlmApi.llm_api_provider=='smart_bee')
+    llm_api_query = llm_api_query.filter( model_llm.LlmApi.llm_model=='gpt-4o')
+    llm_api_query = llm_api_query.filter( model_llm.LlmApi.llm_api_type=='public')
     db_llm_api = llm_api_query.first()
     if db_llm_api is None:
         raise HTTPException(status_code=404, detail="llm api with smart_bee is not found")
     
     # create conversation
     conversation_id = str(utils.generate_conversation_id())
-    db_conversation = database.Conversation(
+    db_conversation = model_llm.Conversation(
         user_id = db_owner.user_id ,
         conversation_id = conversation_id
     )
@@ -103,13 +104,13 @@ async def ask_system_message(
         llm_api_url=db_conversation.llm_api.llm_api_url,
         temperature=db_conversation.temperature,
         max_tokens=db_conversation.max_tokens,
-        sync_conn_pool=database.sync_conn_pool, 
-        async_conn_pool=database.async_conn_pool
+        sync_conn_pool=model_llm.sync_conn_pool, 
+        async_conn_pool=model_llm.async_conn_pool
     )
 
     
     # agent 추가
-    agent_public = db.query(database.Agent).filter(database.Agent.visibility=='public').all()
+    agent_public = db.query(model_llm.Agent).filter(model_llm.Agent.visibility=='public').all()
     for db_agent in agent_public:
         # chat_model
         chat_model = create_chat_model(
@@ -175,7 +176,7 @@ async def ask_system_message(
        
     # 내부함수를 직접 쓴다.
     return_response = []
-    db_message_human = database.Message(
+    db_message_human = model_llm.Message(
         conversation_id = conversation_id,
         message_type = 'human',
         message = message.message,
@@ -206,7 +207,7 @@ async def ask_system_message(
             # Handle other unexpected types if necessary
             joined_texts = message_ai.message
 
-        db_message_ai = database.Message(
+        db_message_ai = model_llm.Message(
             conversation_id = db_conversation.conversation_id,
             message_type = message_ai.role.value,
             # message_type = message_ai.raw_message.type,
@@ -235,7 +236,7 @@ async def ask_system_message(
 
 @router.post("/alert/{sender}", 
     # dependencies=[Depends(cookie)], 
-    response_model=List[Message],
+    response_model=List[schema_llm.Message],
     tags=["System Message"],
     description="""
     시스템 대화를 위한 주소입니다.
@@ -267,16 +268,16 @@ async def alert_system_message(
         # message = request_body.decode('utf-8')  # Decoding as UTF-8
         
         
-        db_sender = db.query(database.User).filter(database.User.nickname == sender,database.User.user_roll=='ALERT').first()
+        db_sender = db.query(model_llm.User).filter(model_llm.User.nickname == sender,model_llm.User.user_roll=='ALERT').first()
         if db_sender is None:
             # check user
             logger.info(f"/api/alert/{sender} check System user")
-            db_owner = db.query(database.User).filter(database.User.user_roll=='SYSTEM').first()
+            db_owner = db.query(model_llm.User).filter(model_llm.User.user_roll=='SYSTEM').first()
             if db_owner is None:
                 raise HTTPException(status_code=404, detail="User of 'SYSTEM' is not found when there is no sender")
             
             # creat user
-            db_sender = database.User(
+            db_sender = model_llm.User(
                 user_id=sender, 
                 password=db_owner.password,  
                 nickname=sender,
@@ -286,21 +287,21 @@ async def alert_system_message(
             
             # check llm api when there is no llm_api in user
             logger.info(f"/api/alert/{sender} check llm api")
-            llm_api_query = db.query(database.LlmApi).filter(database.LlmApi.llm_api_provider=='smart_bee')
-            llm_api_query = llm_api_query.filter( database.LlmApi.llm_model=='gpt-4o')
-            llm_api_query = llm_api_query.filter( database.LlmApi.llm_api_type=='public')
+            llm_api_query = db.query(model_llm.LlmApi).filter(model_llm.LlmApi.llm_api_provider=='smart_bee')
+            llm_api_query = llm_api_query.filter( model_llm.LlmApi.llm_model=='gpt-4o')
+            llm_api_query = llm_api_query.filter( model_llm.LlmApi.llm_api_type=='public')
             db_llm_api = llm_api_query.first()
             if db_llm_api is None:
                 raise HTTPException(status_code=404, detail="llm api with smart_bee is not found")
             
         elif db_sender.llm_api_id :
             # llm api 가 정의되어 있는경우
-            llm_api_query = db.query(database.LlmApi).filter(database.LlmApi.llm_api_id == db_sender.llm_api_id )
+            llm_api_query = db.query(model_llm.LlmApi).filter(model_llm.LlmApi.llm_api_id == db_sender.llm_api_id )
             db_llm_api = llm_api_query.first()
             if db_llm_api is None : 
-                llm_api_query = db.query(database.LlmApi).filter(database.LlmApi.llm_api_provider=='smart_bee')
-                llm_api_query = llm_api_query.filter( database.LlmApi.llm_model=='gpt-4o')
-                llm_api_query = llm_api_query.filter( database.LlmApi.llm_api_type=='public')
+                llm_api_query = db.query(model_llm.LlmApi).filter(model_llm.LlmApi.llm_api_provider=='smart_bee')
+                llm_api_query = llm_api_query.filter( model_llm.LlmApi.llm_model=='gpt-4o')
+                llm_api_query = llm_api_query.filter( model_llm.LlmApi.llm_api_type=='public')
                 db_llm_api = llm_api_query.first()
                 if db_llm_api is None:
                     raise HTTPException(status_code=404, detail=f"llm api with {db_sender.llm_api_id} is not found and llm api with smart_bee is not found")
@@ -308,9 +309,9 @@ async def alert_system_message(
         else: 
              # check llm api when there is no llm_api in user
             logger.info(f"/api/alert/{sender} check llm api")
-            llm_api_query = db.query(database.LlmApi).filter(database.LlmApi.llm_api_provider=='smart_bee')
-            llm_api_query = llm_api_query.filter( database.LlmApi.llm_model=='gpt-4o')
-            llm_api_query = llm_api_query.filter( database.LlmApi.llm_api_type=='public')
+            llm_api_query = db.query(model_llm.LlmApi).filter(model_llm.LlmApi.llm_api_provider=='smart_bee')
+            llm_api_query = llm_api_query.filter( model_llm.LlmApi.llm_model=='gpt-4o')
+            llm_api_query = llm_api_query.filter( model_llm.LlmApi.llm_api_type=='public')
             db_llm_api = llm_api_query.first()
             if db_llm_api is None:
                 raise HTTPException(status_code=404, detail="llm api with smart_bee is not found")       
@@ -318,7 +319,7 @@ async def alert_system_message(
         # create conversation
         logger.info(f"/api/alert/{sender} create conversation")
         conversation_id = str(utils.generate_conversation_id())
-        db_conversation = database.Conversation(
+        db_conversation = model_llm.Conversation(
             user_id = db_sender.user_id ,
             conversation_id = conversation_id
         )
@@ -345,14 +346,14 @@ async def alert_system_message(
             llm_api_url=db_conversation.llm_api.llm_api_url,
             temperature=db_conversation.temperature,
             max_tokens=db_conversation.max_tokens,
-            sync_conn_pool=database.sync_conn_pool, 
-            async_conn_pool=database.async_conn_pool
+            sync_conn_pool=model_llm.sync_conn_pool, 
+            async_conn_pool=model_llm.async_conn_pool
         )
 
         
         # agent 추가
         logger.info(f"/api/alert/{sender} Start public agent Add")
-        agent_public = db.query(database.Agent).filter(database.Agent.visibility=='public').all()
+        agent_public = db.query(model_llm.Agent).filter(model_llm.Agent.visibility=='public').all()
         for db_agent in agent_public:
             db_conversation.agents.append(db_agent)
             # chat_model
@@ -435,7 +436,7 @@ async def alert_system_message(
         return_response = []
 
             
-        db_message_human = database.Message(
+        db_message_human = model_llm.Message(
             conversation_id = conversation_id,
             message_type = 'human',
             message = message,
@@ -503,7 +504,7 @@ async def alert_system_message(
                     tokens_usage = message_ai.tokens_usage.total_tokens
                     
             logger.info(f"joined_texts: {joined_texts}" )
-            db_message_ai = database.Message(
+            db_message_ai = model_llm.Message(
                 conversation_id = db_conversation.conversation_id,
                 message_type = message_ai.role.value,
                 # message_type = message_ai.raw_message.type,

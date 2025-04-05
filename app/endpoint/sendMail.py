@@ -4,7 +4,9 @@ import os
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from app import models, database
+from app import database
+from app.model import model_llm
+from app.schema import schema_llm
 import app.config
 import logging
 import time
@@ -39,7 +41,7 @@ SMTP_SERVICEID = os.getenv('SMTP_SERVICEID')
         ex) mgs@sktelecom.com(발신자메일주소) -> xxxxxx@naver.com(수신자메일주소)
     """
 )
-async def send_email(email_request: models.EmailRequest):
+async def send_email(email_request: schema_llm.EmailRequest):
     
     logger.info(f"start send email : {email_request}" )
     # Generate a unique message ID

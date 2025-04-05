@@ -6,7 +6,7 @@ from datetime import datetime
 
 from ai_core.data_source.base import DataSourceType
 from ai_core.data_source.splitter.base import SplitterType
-from .database import Base , UserRoll , KST
+from app.database import Base  ,  KST
 from pydantic import BaseModel , SecretStr , EmailStr, Field, computed_field, field_validator, root_validator, validator, model_validator
 from typing import Annotated, Optional ,List,ForwardRef
 

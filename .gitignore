@@ -3,3 +3,8 @@ docs/build/
 installed_packages.txt
 ai_core/data/
 venv/
+venv312/
+__pycache__
+.DS_Store
+*.log
+logs/
